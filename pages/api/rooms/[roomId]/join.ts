@@ -7,6 +7,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     res.setHeader('Allow', ['POST']);
     return res.status(405).end('Method Not Allowed');
   }
+  res.setHeader('Cache-Control', 'no-store');
   const { roomId } = req.query as { roomId: string };
   const { peerId } = req.body || {};
   if (!peerId) return res.status(400).json({ ok: false, error: 'Missing peerId' });

@@ -22,6 +22,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (req.method === 'GET') {
     const user = getUserFromRequest(req);
     if (!user) return res.status(401).json({ ok: false, error: 'Unauthorized' });
+    res.setHeader('Cache-Control', 'no-store');
     // List by classId
     const classId = String(req.query.classId || '');
     if (classId) {

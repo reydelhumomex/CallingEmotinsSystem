@@ -169,3 +169,7 @@ export async function listRoomsByClassId(classId: string): Promise<Array<Pick<Ro
   out.sort((a, b) => b.createdAt - a.createdAt);
   return out;
 }
+
+export function getStoreMode(): 'redis' | 'memory' {
+  return useRedis ? 'redis' : 'memory';
+}

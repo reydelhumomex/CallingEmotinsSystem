@@ -6,6 +6,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const { roomId } = req.query as { roomId: string };
   const user = getUserFromRequest(req);
   if (!user) return res.status(401).json({ ok: false, error: 'Unauthorized' });
+  res.setHeader('Cache-Control', 'no-store');
   let room = await getRoom(roomId);
   if (!room) {
     // Auto-create if missing to support stateless/serverless instances
