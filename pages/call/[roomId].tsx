@@ -120,11 +120,23 @@ function CallPage() {
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data?.error || data?.message || `HTTP ${res.status}`);
-        const count = (data.participants || []).length;
-        const initiator = count <= 1;
+        const participants: string[] = data.participants || [];
+        const others = participants.filter((p) => p !== peerId);
+
+        // Heuristic: if there is already an offer in the room from others, be the callee.
+        let initiator = others.length === 0;
+        try {
+          const sigRes = await fetch(`/api/rooms/${roomId}/signal?since=0&excludeFrom=${peerId}`, {
+            headers: { 'Authorization': `Bearer ${authToken}`, 'X-User-Email': authEmail || '' },
+          });
+          const sig = await sigRes.json();
+          const hasRemoteOffer = Array.isArray(sig?.messages) && sig.messages.some((m: any) => m?.type === 'offer' && m?.from !== peerId);
+          if (hasRemoteOffer) initiator = false;
+        } catch {}
+
         setIsInitiator(initiator);
         setJoined(true);
-        // Auto-connect: teacher (initiator) starts call; student prepares answer
+        // Auto-connect: initiator starts call; callee prepares to answer
         setTimeout(() => {
           if (initiator) startCall(); else prepareAnswer();
         }, 0);
