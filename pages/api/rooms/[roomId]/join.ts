@@ -1,5 +1,5 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
-import { addParticipant, getRoom } from '../../../../lib/signalingStore';
+import { addParticipant, getRoom, createRoom, getParticipants } from '../../../../lib/signalingStore';
 import { getUserFromRequest } from '../../../../lib/auth';
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -12,9 +12,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (!peerId) return res.status(400).json({ ok: false, error: 'Missing peerId' });
   const user = getUserFromRequest(req);
   if (!user) return res.status(401).json({ ok: false, error: 'Unauthorized' });
-  const room = getRoom(roomId);
-  if (!room) return res.status(404).json({ ok: false, error: 'Room not found' });
+  let room = await getRoom(roomId);
+  if (!room) {
+    // Auto-create the room on join to support stateless/serverless deploys
+    room = await createRoom(roomId, { classId: user.classId, createdBy: user.email });
+  }
   if (room.classId && room.classId !== user.classId) return res.status(403).json({ ok: false, error: 'Forbidden' });
-  addParticipant(roomId, peerId);
-  return res.status(200).json({ ok: true, participants: Array.from(room.participants) });
+  await addParticipant(roomId, peerId, { classId: user.classId, createdBy: user.email });
+  const participants = await getParticipants(roomId);
+  return res.status(200).json({ ok: true, participants });
 }

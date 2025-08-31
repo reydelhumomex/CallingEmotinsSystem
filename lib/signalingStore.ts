@@ -8,87 +8,164 @@ export interface SignalMessage {
   ts: number;
 }
 
-export interface Room {
+export interface RoomMeta {
   id: string;
   createdAt: number;
-  messages: SignalMessage[];
-  participants: Set<string>;
   classId?: string;
   createdBy?: string; // email
 }
 
-const g = globalThis as any;
-type Store = { rooms: Map<string, Room>; nextMsgId: number };
-const store: Store = g.__CLASSENSE_SIGNALING || (g.__CLASSENSE_SIGNALING = { rooms: new Map<string, Room>(), nextMsgId: 1 });
+// Optional Redis (Vercel KV/Upstash) backing. Falls back to in-memory store for dev.
+let useRedis = Boolean(process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN);
+type UpstashRedis = any;
+let redis: UpstashRedis | null = null;
+if (useRedis) {
+  try {
+    // Lazy require to avoid type dependency in builds without KV
+    const { Redis } = require('@upstash/redis');
+    redis = new Redis({ url: process.env.KV_REST_API_URL, token: process.env.KV_REST_API_TOKEN });
+  } catch (e) {
+    // If the package is missing, fall back to memory
+    useRedis = false;
+    redis = null;
+  }
+}
 
-export function createRoom(id: string, meta?: { classId?: string; createdBy?: string }): Room {
-  let room = store.rooms.get(id);
+// In-memory fallback store (works in dev and single-process prod)
+type MemRoom = RoomMeta & { messages: SignalMessage[]; participants: Set<string> };
+const g = globalThis as any;
+type MemStore = { rooms: Map<string, MemRoom>; nextMsgId: number };
+const mem: MemStore = g.__CLASSENSE_SIGNALING || (g.__CLASSENSE_SIGNALING = { rooms: new Map<string, MemRoom>(), nextMsgId: 1 });
+
+// Key helpers for Redis
+function kRoom(id: string) { return `room:${id}`; }
+function kParticipants(id: string) { return `room:${id}:participants`; }
+function kMessages(id: string) { return `room:${id}:messages`; }
+function kMsgSeq(id: string) { return `room:${id}:msg_id`; }
+function kClassIdx(classId: string) { return `class:${classId}:rooms`; }
+
+export async function createRoom(id: string, meta?: { classId?: string; createdBy?: string }): Promise<RoomMeta> {
+  if (useRedis && redis) {
+    const now = Date.now();
+    const existing = await redis.get(kRoom(id));
+    if (existing) return existing as RoomMeta;
+    const room: RoomMeta = { id, createdAt: now, classId: meta?.classId, createdBy: meta?.createdBy };
+    await redis.set(kRoom(id), room);
+    if (room.classId) {
+      await redis.zadd(kClassIdx(room.classId), { score: room.createdAt, member: room.id });
+    }
+    return room;
+  }
+  let room = mem.rooms.get(id);
   if (!room) {
-    room = {
-      id,
-      createdAt: Date.now(),
-      messages: [],
-      participants: new Set<string>(),
-      classId: meta?.classId,
-      createdBy: meta?.createdBy,
-    };
-    store.rooms.set(id, room);
+    room = { id, createdAt: Date.now(), messages: [], participants: new Set<string>(), classId: meta?.classId, createdBy: meta?.createdBy };
+    mem.rooms.set(id, room);
   }
   return room;
 }
 
-export function getRoom(id: string): Room | undefined {
-  return store.rooms.get(id);
+export async function getRoom(id: string): Promise<RoomMeta | undefined> {
+  if (useRedis && redis) {
+    const meta = await redis.get(kRoom(id));
+    return (meta || undefined) as RoomMeta | undefined;
+  }
+  return mem.rooms.get(id);
 }
 
-export function ensureRoom(id: string): Room {
-  return createRoom(id);
+export async function ensureRoom(id: string, meta?: { classId?: string; createdBy?: string }): Promise<RoomMeta> {
+  const room = await getRoom(id);
+  if (room) return room;
+  return createRoom(id, meta);
 }
 
-export function addParticipant(roomId: string, peerId: string) {
-  const room = ensureRoom(roomId);
-  room.participants.add(peerId);
-  return room;
+export async function addParticipant(roomId: string, peerId: string, meta?: { classId?: string; createdBy?: string }) {
+  if (useRedis && redis) {
+    await ensureRoom(roomId, meta);
+    await redis.sadd(kParticipants(roomId), peerId);
+    return;
+  }
+  const room = (await ensureRoom(roomId, meta)) as MemRoom;
+  (room as MemRoom).participants.add(peerId);
 }
 
-export function removeParticipant(roomId: string, peerId: string) {
-  const room = getRoom(roomId);
+export async function getParticipants(roomId: string): Promise<string[]> {
+  if (useRedis && redis) {
+    const list = await redis.smembers(kParticipants(roomId));
+    return (list || []) as string[];
+  }
+  const room = mem.rooms.get(roomId) as MemRoom | undefined;
+  return room ? Array.from(room.participants) : [];
+}
+
+export async function removeParticipant(roomId: string, peerId: string) {
+  if (useRedis && redis) {
+    await redis.srem(kParticipants(roomId), peerId);
+    return;
+  }
+  const room = mem.rooms.get(roomId) as MemRoom | undefined;
   if (room) {
     room.participants.delete(peerId);
     if (room.participants.size === 0 && room.messages.length > 2000) {
-      // cleanup policy placeholder
-      store.rooms.delete(roomId);
+      mem.rooms.delete(roomId);
     }
   }
 }
 
-export function postMessage(roomId: string, from: string, type: SignalType, payload: any): SignalMessage {
-  const room = ensureRoom(roomId);
-  const msg: SignalMessage = { id: store.nextMsgId++, from, type, payload, ts: Date.now() };
+export async function postMessage(roomId: string, from: string, type: SignalType, payload: any): Promise<SignalMessage> {
+  if (useRedis && redis) {
+    await ensureRoom(roomId);
+    const id = await redis.incr(kMsgSeq(roomId));
+    const msg: SignalMessage = { id, from, type, payload, ts: Date.now() };
+    await redis.zadd(kMessages(roomId), { score: id, member: JSON.stringify(msg) });
+    // Optional trim: keep last 5000 by id window (no-op for small demos)
+    return msg;
+  }
+  const room = (await ensureRoom(roomId)) as MemRoom;
+  const msg: SignalMessage = { id: mem.nextMsgId++, from, type, payload, ts: Date.now() };
   room.messages.push(msg);
-  // Keep only last N messages to bound memory
   if (room.messages.length > 5000) {
     room.messages.splice(0, room.messages.length - 5000);
   }
   return msg;
 }
 
-export function getMessagesSince(roomId: string, sinceId: number = 0, excludeFrom?: string): { messages: SignalMessage[]; lastId: number } {
-  const room = ensureRoom(roomId);
+export async function getMessagesSince(roomId: string, sinceId: number = 0, excludeFrom?: string): Promise<{ messages: SignalMessage[]; lastId: number }> {
+  if (useRedis && redis) {
+    await ensureRoom(roomId);
+    const raw = (await redis.zrange(kMessages(roomId), sinceId + 0.000001, '+inf', { byScore: true })) as string[];
+    const messages: SignalMessage[] = (raw || []).map((s) => { try { return JSON.parse(s); } catch { return null; } }).filter(Boolean);
+    const filtered = excludeFrom ? messages.filter((m) => m.from !== excludeFrom) : messages;
+    const lastId = filtered.length ? filtered[filtered.length - 1].id : sinceId;
+    return { messages: filtered, lastId };
+  }
+  const room = (await ensureRoom(roomId)) as MemRoom;
   const startIdx = room.messages.findIndex(m => m.id > sinceId);
   const msgs = (startIdx === -1 ? [] : room.messages.slice(startIdx)).filter(m => (excludeFrom ? m.from !== excludeFrom : true));
   const lastId = room.messages.length ? room.messages[room.messages.length - 1].id : sinceId;
   return { messages: msgs, lastId };
 }
 
-export function listRoomsByClassId(classId: string): Array<Pick<Room, 'id' | 'createdAt' | 'classId' | 'createdBy'>> {
-  const out: Array<Pick<Room, 'id' | 'createdAt' | 'classId' | 'createdBy'>> = [];
-  store.rooms.forEach((room) => {
+export async function listRoomsByClassId(classId: string): Promise<Array<Pick<RoomMeta, 'id' | 'createdAt' | 'classId' | 'createdBy'>>> {
+  if (useRedis && redis) {
+    const entries = await redis.zrange(kClassIdx(classId), 0, -1, { withScores: true });
+    // zrange returns alternating [member, score, member, score...]
+    const out: Array<Pick<RoomMeta, 'id' | 'createdAt' | 'classId' | 'createdBy'>> = [];
+    for (let i = 0; i < entries.length; i += 2) {
+      const id = entries[i] as string;
+      const createdAt = Number(entries[i + 1]);
+      const meta = (await redis.get(kRoom(id))) as RoomMeta | null;
+      out.push({ id, createdAt, classId: meta?.classId, createdBy: meta?.createdBy });
+    }
+    // Already sorted ascending by score; reverse for newest first
+    out.sort((a, b) => b.createdAt - a.createdAt);
+    return out;
+  }
+  const out: Array<Pick<RoomMeta, 'id' | 'createdAt' | 'classId' | 'createdBy'>> = [];
+  mem.rooms.forEach((room) => {
     if (room.classId === classId) {
       out.push({ id: room.id, createdAt: room.createdAt, classId: room.classId, createdBy: room.createdBy });
     }
   });
-  // sort newest first
   out.sort((a, b) => b.createdAt - a.createdAt);
   return out;
 }

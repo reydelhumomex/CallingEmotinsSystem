@@ -16,7 +16,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       return res.status(403).json({ ok: false, error: 'Only teacher can create rooms' });
     }
     const id = (req.body?.id as string) || randomId();
-    const room = createRoom(id, { classId: user.classId, createdBy: user.email });
+    const room = await createRoom(id, { classId: user.classId, createdBy: user.email });
     return res.status(200).json({ ok: true, roomId: room.id });
   }
   if (req.method === 'GET') {
@@ -26,13 +26,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const classId = String(req.query.classId || '');
     if (classId) {
       if (user.classId !== classId) return res.status(403).json({ ok: false, error: 'Forbidden' });
-      const rooms = listRoomsByClassId(classId);
+      const rooms = await listRoomsByClassId(classId);
       return res.status(200).json({ ok: true, rooms });
     }
     // Simple existence check by id
     const id = String(req.query.id || '');
     if (!id) return res.status(400).json({ ok: false, error: 'Missing id or classId' });
-    const room = getRoom(id);
+    const room = await getRoom(id);
     return res.status(200).json({ ok: true, exists: !!room });
   }
   res.setHeader('Allow', ['POST', 'GET']);

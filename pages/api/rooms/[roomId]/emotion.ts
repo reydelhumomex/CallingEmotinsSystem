@@ -7,7 +7,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const { roomId } = req.query as { roomId: string };
   const user = getUserFromRequest(req);
   if (!user) return res.status(401).json({ ok: false, error: 'Unauthorized' });
-  const room = getRoom(roomId);
+  const room = await getRoom(roomId);
   // For GET, if room is missing (e.g., dev HMR cleared memory), return empty data instead of 404
   if (req.method === 'GET' && !room) {
     const data = getRoomEmotions(roomId);
