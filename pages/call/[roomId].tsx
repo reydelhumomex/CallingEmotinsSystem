@@ -290,7 +290,7 @@ function CallPage() {
   const sendOffer = useCallback(async (otherId: string, opts?: { iceRestart?: boolean; forceInitiate?: boolean }) => {
     const pc = await getOrCreatePC(otherId);
     if (!pc) return;
-    const canInitiate = opts?.forceInitiate ? true : shouldInitiate(otherId);
+    const canInitiate = opts?.forceInitiate ? true : (peerId < otherId);
     if (!canInitiate) return;
     try {
       const offer = await pc.createOffer(opts?.iceRestart ? ({ iceRestart: true } as any) : undefined);
@@ -311,11 +311,9 @@ function CallPage() {
       };
       schedule();
     } catch {}
-  }, [getOrCreatePC, shouldInitiate, postSignal, clearOfferTimer]);
+  }, [getOrCreatePC, postSignal, clearOfferTimer, peerId]);
 
-  const shouldInitiate = useCallback((otherId: string) => {
-    return peerId < otherId;
-  }, [peerId]);
+  // removed explicit shouldInitiate helper; inline comparison in sendOffer
 
   const connectToPeer = useCallback(async (otherId: string) => {
     await getOrCreatePC(otherId);
