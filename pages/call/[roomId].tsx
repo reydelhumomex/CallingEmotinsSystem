@@ -50,6 +50,7 @@ function CallPage() {
   const [isMicMuted, setIsMicMuted] = useState(false);
   const [remoteMuted, setRemoteMuted] = useState(true);
   // Note: modern browsers may block autoplay with audio; we default to muted
+  const offerTimersRef = useRef<Record<string, { timer: any; retries: number }>>({});
 
   const pageUrl = typeof window !== 'undefined' ? window.location.href : '';
   const { onCopy, hasCopied } = useClipboard(pageUrl);
@@ -198,15 +199,19 @@ function CallPage() {
     pc.onconnectionstatechange = () => {
       const anyConnected = Array.from(pcsRef.current.values()).some((p) => p.connectionState === 'connected');
       setConnected(anyConnected);
+      if (pc!.connectionState === 'connected') {
+        const t = offerTimersRef.current[remoteId];
+        if (t?.timer) { clearTimeout(t.timer); }
+        delete offerTimersRef.current[remoteId];
+      }
     };
 
     let failTimer: any;
     const tryIceRestart = async () => {
       try {
         if (pc?.signalingState === 'closed') return;
-        const offer = await pc!.createOffer({ iceRestart: true } as any);
-        await pc!.setLocalDescription(offer);
-        await postSignal('offer', offer, remoteId);
+        // escalate via controlled offer sender
+        await sendOffer(remoteId, { iceRestart: true });
       } catch {}
     };
     pc.oniceconnectionstatechange = () => {
@@ -276,18 +281,46 @@ function CallPage() {
     return pc;
   }, [getRtcConfig, ensureLocalStream, postSignal, remoteMuted, toast]);
 
+  const clearOfferTimer = useCallback((rid: string) => {
+    const t = offerTimersRef.current[rid];
+    if (t?.timer) clearTimeout(t.timer);
+    delete offerTimersRef.current[rid];
+  }, []);
+
+  const sendOffer = useCallback(async (otherId: string, opts?: { iceRestart?: boolean; forceInitiate?: boolean }) => {
+    const pc = await getOrCreatePC(otherId);
+    if (!pc) return;
+    const canInitiate = opts?.forceInitiate ? true : shouldInitiate(otherId);
+    if (!canInitiate) return;
+    try {
+      const offer = await pc.createOffer(opts?.iceRestart ? ({ iceRestart: true } as any) : undefined);
+      await pc.setLocalDescription(offer);
+      await postSignal('offer', offer, otherId);
+      // arm re-offer timer
+      clearOfferTimer(otherId);
+      const entry = { retries: 0, timer: 0 as any };
+      offerTimersRef.current[otherId] = entry;
+      const schedule = () => {
+        entry.timer = setTimeout(async () => {
+          if (pcsRef.current.get(otherId)?.connectionState === 'connected') { clearOfferTimer(otherId); return; }
+          entry.retries += 1;
+          const restart = entry.retries >= 1; // second try uses ICE restart
+          try { await sendOffer(otherId, { iceRestart: restart, forceInitiate: true }); } catch {}
+          if (entry.retries < 3) schedule();
+        }, 8000);
+      };
+      schedule();
+    } catch {}
+  }, [getOrCreatePC, shouldInitiate, postSignal, clearOfferTimer]);
+
   const shouldInitiate = useCallback((otherId: string) => {
     return peerId < otherId;
   }, [peerId]);
 
   const connectToPeer = useCallback(async (otherId: string) => {
-    const pc = await getOrCreatePC(otherId);
-    if (!pc) return;
-    if (!shouldInitiate(otherId)) return; // wait for their offer
-    const offer = await pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: true });
-    await pc.setLocalDescription(offer);
-    await postSignal('offer', offer, otherId);
-  }, [getOrCreatePC, postSignal, shouldInitiate]);
+    await getOrCreatePC(otherId);
+    await sendOffer(otherId);
+  }, [getOrCreatePC, sendOffer]);
 
   // Join room and set up initial peers
   useEffect(() => {
@@ -377,12 +410,21 @@ function CallPage() {
       await pc.setLocalDescription(answer);
       await postSignal('answer', answer, from);
     } else if (msg.type === 'answer') {
-      if (pc.signalingState === 'have-local-offer' && !pc.currentRemoteDescription) {
+      try {
+        // Ignore stale/duplicate answers
+        if (pc.signalingState !== 'have-local-offer' || pc.currentRemoteDescription) return;
         await pc.setRemoteDescription(new RTCSessionDescription(msg.payload));
         const buf = pendingByPeerRef.current[from] || [];
         while (buf.length) {
           const c = buf.shift()!;
           try { await pc.addIceCandidate(new RTCIceCandidate(c)); } catch {}
+        }
+        clearOfferTimer(from);
+      } catch (e: any) {
+        // Swallow race where state flips to stable between check and setRemoteDescription
+        const msgTxt = String(e?.message || e);
+        if (!/wrong state|InvalidStateError|stable/i.test(msgTxt)) {
+          console.warn('Failed to apply remote answer', e);
         }
       }
     } else if (msg.type === 'candidate') {
@@ -402,8 +444,9 @@ function CallPage() {
       pcsRef.current.delete(from);
       setRemoteStreams((prev) => { const n = { ...prev }; delete n[from]; return n; });
       delete pendingByPeerRef.current[from];
+      clearOfferTimer(from);
     }
-  }, [getOrCreatePC, peerId, postSignal]);
+  }, [getOrCreatePC, peerId, postSignal, clearOfferTimer]);
 
   // Poll loop for signals
   useEffect(() => {
@@ -538,16 +581,11 @@ function CallPage() {
 
   // Helpers
   const negotiate = useCallback(async () => {
-    const entries = Array.from(pcsRef.current.entries());
-    for (const [rid, pc] of entries) {
-      if (!pc || pc.signalingState === 'closed') continue;
-      try {
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-        await postSignal('offer', offer, rid);
-      } catch {}
+    const entries = Array.from(pcsRef.current.keys());
+    for (const rid of entries) {
+      await sendOffer(rid);
     }
-  }, [postSignal]);
+  }, [sendOffer]);
 
   const toggleMic = useCallback(() => {
     const stream = localStreamRef.current;
