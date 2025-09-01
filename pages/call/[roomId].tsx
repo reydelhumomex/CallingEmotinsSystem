@@ -60,12 +60,39 @@ function CallPage() {
       { urls: 'stun:global.stun.twilio.com:3478' },
     ];
     const turnUrls = (process.env.NEXT_PUBLIC_TURN_URL || '').trim();
+    const turnHost = (process.env.NEXT_PUBLIC_TURN_HOST || '').trim();
     const turnUser = (process.env.NEXT_PUBLIC_TURN_USERNAME || '').trim();
     const turnCred = (process.env.NEXT_PUBLIC_TURN_CREDENTIAL || '').trim();
     const forceTurn = String(process.env.NEXT_PUBLIC_FORCE_TURN || '').toLowerCase();
+    const validUrls: string[] = [];
+    const pushIfValid = (u: string) => {
+      const s = u.trim();
+      if (!s) return;
+      // Accept formats: turn[s]:host[:port][?transport=udp|tcp]
+      const m = s.match(/^(turns?):([^\s:?,]+)(?::(\d{1,5}))?(?:\?transport=(udp|tcp))?$/i);
+      if (!m) return;
+      const scheme = m[1].toLowerCase();
+      const host = m[2];
+      let port = m[3] ? Number(m[3]) : (scheme === 'turns' ? 5349 : 3478);
+      if (!(port > 0 && port < 65536)) return;
+      const transport = (m[4] || '').toLowerCase();
+      const url = `${scheme}:${host}:${port}${transport ? `?transport=${transport}` : ''}`;
+      validUrls.push(url);
+    };
     if (turnUrls) {
-      const urls = turnUrls.split(',').map((u) => u.trim()).filter(Boolean);
-      servers.push({ urls, username: turnUser || undefined, credential: turnCred || undefined });
+      turnUrls.split(',').forEach(pushIfValid);
+    } else if (turnHost) {
+      // Build a hardened default set for strict NATs
+      [
+        `turn:${turnHost}:3478?transport=udp`,
+        `turn:${turnHost}:3478?transport=tcp`,
+        `turn:${turnHost}:80?transport=tcp`,
+        `turns:${turnHost}:443?transport=tcp`,
+        `turns:${turnHost}:5349?transport=tcp`,
+      ].forEach(pushIfValid);
+    }
+    if (validUrls.length) {
+      servers.push({ urls: validUrls, username: turnUser || undefined, credential: turnCred || undefined });
     }
     const cfg: RTCConfiguration = { iceServers: servers };
     if (forceTurn === '1' || forceTurn === 'true' || forceTurn === 'yes') {
