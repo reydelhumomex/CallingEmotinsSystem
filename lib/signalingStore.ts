@@ -17,9 +17,20 @@ export interface RoomMeta {
 }
 
 // Optional Redis (Vercel KV/Upstash) backing. Falls back to in-memory store for dev.
-const REDIS_URL = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
-const REDIS_TOKEN = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
-let useRedis = Boolean(REDIS_URL && REDIS_TOKEN);
+// Detection of common env var names
+const SIGNALING_STORE = String(process.env.SIGNALING_STORE || '').toLowerCase(); // 'redis' | 'memory' | ''(auto)
+const REQUIRE_REDIS = /^(1|true|yes)$/i.test(String(process.env.REQUIRE_REDIS || ''));
+const REDIS_URL =
+  process.env.KV_REST_API_URL ||
+  process.env.UPSTASH_REDIS_REST_URL ||
+  process.env.REDIS_URL || // broader compatibility
+  '';
+const REDIS_TOKEN =
+  process.env.KV_REST_API_TOKEN ||
+  process.env.UPSTASH_REDIS_REST_TOKEN ||
+  process.env.REDIS_TOKEN || // broader compatibility
+  '';
+let useRedis = SIGNALING_STORE === 'redis' ? true : SIGNALING_STORE === 'memory' ? false : Boolean(REDIS_URL && REDIS_TOKEN);
 type UpstashRedis = any;
 let redis: UpstashRedis | null = null;
 if (useRedis) {
@@ -29,10 +40,26 @@ if (useRedis) {
     redis = new Redis({ url: REDIS_URL, token: REDIS_TOKEN });
   } catch (e) {
     // If the package is missing, fall back to memory
-    useRedis = false;
-    redis = null;
+    if (SIGNALING_STORE === 'redis' || REQUIRE_REDIS) {
+      console.error('[Signaling] Redis required but @upstash/redis is not available.');
+      throw e;
+    } else {
+      useRedis = false;
+      redis = null;
+      try { console.warn('[Signaling] Falling back to in-memory store (missing @upstash/redis).'); } catch {}
+    }
   }
 }
+
+// If Redis was requested/required but missing credentials, surface an explicit error.
+if ((SIGNALING_STORE === 'redis' || REQUIRE_REDIS) && !(REDIS_URL && REDIS_TOKEN)) {
+  const msg = '[Signaling] Redis required but credentials missing. Set KV_REST_API_URL and KV_REST_API_TOKEN (or Upstash equivalents).';
+  console.error(msg);
+  throw new Error(msg);
+}
+
+// One-time log of chosen store mode (useful in server logs)
+try { console.log(`[Signaling] Store mode: ${useRedis ? 'redis' : 'memory'}`); } catch {}
 
 // In-memory fallback store (works in dev and single-process prod)
 type MemRoom = RoomMeta & { messages: SignalMessage[]; participants: Set<string> };

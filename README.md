@@ -148,6 +148,15 @@ On Vercel, set the same TURN envs in Project Settings → Environment Variables:
 - (optional) `NEXT_PUBLIC_FORCE_TURN` set to `1` para obligar a TURN
 - (optional) `KV_REST_API_URL`, `KV_REST_API_TOKEN`
 
+Force Redis (optional)
+- You can force the signaling store to use Redis and fail fast if not configured:
+  - `SIGNALING_STORE=redis`
+  - or `REQUIRE_REDIS=1`
+  - The store also recognizes Upstash names `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN`.
+
+Quick debug
+- Open `/api/debug/store` to verify: it should return `{ mode: "redis" }` in production when Redis is active.
+
 Notas de compatibilidad NAT
 - Incluir `turns:...:443?transport=tcp` y `turn:...:80?transport=tcp` ayuda cuando UDP está bloqueado.
 - Mantén también `turn:...:3478?transport=udp` para redes abiertas (menor latencia).

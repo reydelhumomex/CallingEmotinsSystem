@@ -14,22 +14,72 @@ export function buildIceConfig(): RTCConfiguration {
   const validateTurn = (u: string) => {
     const s = u.trim();
     if (!s) return null;
-    const m = s.match(/^(turns?):([^\s:?,]+)(?::(\d{1,5}))?(?:\?transport=(udp|tcp))?$/i);
+    // Accept broader forms, e.g. turn:user@host:port?transport=tcp and extra query params
+    const m = s.match(/^(turns?):(.+)$/i);
     if (!m) return null;
     const scheme = m[1].toLowerCase();
-    const host = m[2];
-    const port = m[3] ? Number(m[3]) : (scheme === 'turns' ? 5349 : 3478);
+    let rest = m[2].trim();
+
+    // Strip embedded credentials if present (user[:pass]@)
+    const atIdx = rest.lastIndexOf('@');
+    if (atIdx !== -1) rest = rest.slice(atIdx + 1);
+
+    // Separate query string
+    let hostport = rest;
+    let query = '';
+    const qIdx = rest.indexOf('?');
+    if (qIdx !== -1) {
+      hostport = rest.slice(0, qIdx);
+      query = rest.slice(qIdx + 1);
+    }
+
+    // Extract transport if present (ignore other params)
+    let transport = '';
+    if (query) {
+      const pairs = query.split(/[&;]/);
+      for (const p of pairs) {
+        const [k, v] = p.split('=');
+        if ((k || '').toLowerCase() === 'transport' && v) {
+          const t = v.trim().toLowerCase();
+          if (t === 'udp' || t === 'tcp') { transport = t; break; }
+        }
+      }
+    }
+
+    // Parse host and port (support IPv6 [::1])
+    let host = '';
+    let portStr = '';
+    if (hostport.startsWith('[')) {
+      const end = hostport.indexOf(']');
+      if (end === -1) return null;
+      host = hostport.slice(0, end + 1);
+      if (hostport.length > end + 1 && hostport[end + 1] === ':') {
+        portStr = hostport.slice(end + 2);
+      }
+    } else {
+      const parts = hostport.split(':');
+      if (parts.length > 1) {
+        portStr = parts.pop() as string;
+        host = parts.join(':');
+      } else {
+        host = hostport;
+      }
+    }
+
+    const port = portStr ? Number(portStr) : (scheme === 'turns' ? 5349 : 3478);
     if (!(port > 0 && port < 65536)) return null;
-    const transport = (m[4] || '').toLowerCase();
+    if (!host || /\s/.test(host)) return null;
+
     return `${scheme}:${host}:${port}${transport ? `?transport=${transport}` : ''}`;
   };
 
   let turnUrls: string[] = [];
   if (turnUrlsEnv) {
-    turnUrls = turnUrlsEnv
-      .split(',')
-      .map(validateTurn)
-      .filter(Boolean) as string[];
+    const raw = turnUrlsEnv.split(/[\s,]+/).filter(Boolean);
+    turnUrls = raw.map(validateTurn).filter(Boolean) as string[];
+    if (!turnUrls.length && raw.length) {
+      try { console.warn('[ICE] No valid TURN URLs parsed from NEXT_PUBLIC_TURN_URL. Check format.'); } catch {}
+    }
   } else if (turnHost) {
     // Prioritize one UDP and one TLS for best coverage
     turnUrls = [
@@ -57,9 +107,9 @@ export function buildIceConfig(): RTCConfiguration {
   }
 
   const cfg: RTCConfiguration = { iceServers: servers };
-  // Force relay to guarantee connectivity (normal + incognito on same device)
-  // You can override by setting NEXT_PUBLIC_FORCE_TURN=false explicitly.
-  const forceTurn = String(process.env.NEXT_PUBLIC_FORCE_TURN ?? 'true').toLowerCase();
+  // Force relay only if explicitly requested via env
+  // Set NEXT_PUBLIC_FORCE_TURN=true in Vercel to force TURN relay.
+  const forceTurn = String(process.env.NEXT_PUBLIC_FORCE_TURN || '').toLowerCase();
   if (forceTurn === '1' || forceTurn === 'true' || forceTurn === 'yes') {
     (cfg as any).iceTransportPolicy = 'relay';
   }
