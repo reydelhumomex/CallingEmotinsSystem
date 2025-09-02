@@ -146,6 +146,7 @@ On Vercel, set the same TURN envs in Project Settings → Environment Variables:
 - `NEXT_PUBLIC_TURN_USERNAME`
 - `NEXT_PUBLIC_TURN_CREDENTIAL`
 - (optional) `NEXT_PUBLIC_FORCE_TURN` set to `1` para obligar a TURN
+- (optional) `NEXT_PUBLIC_DISABLE_STUN=1` para no anunciar ningún STUN
 - (optional) `KV_REST_API_URL`, `KV_REST_API_TOKEN`
 
 Force Redis (optional)
@@ -173,6 +174,7 @@ En lugar de usuario/clave fijos, puedes usar el endpoint de credenciales efímer
   - `NEXT_PUBLIC_TURN_CREDENTIALS_URL=https://<TU_SUBDOMINIO>.metered.live/api/v1/turn/credentials?...` (usa exactamente la URL que te muestra tu dashboard; puede incluir `apiKey` u otros parámetros).
 - Opcional: si defines `NEXT_PUBLIC_TURN_CREDENTIALS_URL`, el código no inyecta el fallback genérico de OpenRelay.
 - Puedes combinarlo con `NEXT_PUBLIC_FORCE_TURN=1` y `NEXT_PUBLIC_DEBUG_ICE=1` para depurar.
+- Para desactivar STUN por completo y usar solo TURN: `NEXT_PUBLIC_DISABLE_STUN=1`.
 
 Comprobación:
 - Abre `/api/debug/ice`: debe mostrar un `iceServers` con tu host de Metered y `hasUsername:true`, `hasCredential:true`.

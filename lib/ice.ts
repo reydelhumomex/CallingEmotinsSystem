@@ -1,13 +1,15 @@
 export function buildIceConfig(): RTCConfiguration {
   // Keep Chrome recommendations: <= 2 server entries (1 STUN + 1 TURN)
   // Prefer a vendor STUN first for stickiness (Metered/OpenRelay), then Google.
-  const defaultStuns: string[] = [
+  const defaultStunsAll: string[] = [
     'stun:openrelay.metered.ca:80',
-    'stun:stun.l.google.com:19302',
+    // Removed Google STUN by default per user request
+    // 'stun:stun.l.google.com:19302',
   ];
 
   const turnUrlsEnv = (process.env.NEXT_PUBLIC_TURN_URL || '').trim();
   const turnCredsUrl = (process.env.NEXT_PUBLIC_TURN_CREDENTIALS_URL || '').trim();
+  const disableStunFlag = String(process.env.NEXT_PUBLIC_DISABLE_STUN || '').toLowerCase();
   let turnHost = (process.env.NEXT_PUBLIC_TURN_HOST || '').trim();
   let turnUser = (process.env.NEXT_PUBLIC_TURN_USERNAME || '').trim();
   let turnCred = (process.env.NEXT_PUBLIC_TURN_CREDENTIAL || '').trim();
@@ -17,7 +19,11 @@ export function buildIceConfig(): RTCConfiguration {
     if (!s) return null;
     // Accept broader forms, e.g. turn:user@host:port?transport=tcp and extra query params
     const m = s.match(/^(turns?):(.+)$/i);
-    if (!m) return null;
+    if (!m) {
+      // Extremely tolerant fallback: if it looks like a TURN URI, accept as-is
+      if (/^turns?:/i.test(s)) return s;
+      return null;
+    }
     const scheme = m[1].toLowerCase();
     let rest = m[2].trim();
 
@@ -77,7 +83,7 @@ export function buildIceConfig(): RTCConfiguration {
   let turnUrls: string[] = [];
   if (turnUrlsEnv) {
     const raw = turnUrlsEnv.split(/[\s,]+/).filter(Boolean);
-    turnUrls = raw.map(validateTurn).filter(Boolean) as string[];
+    turnUrls = raw.map((u) => validateTurn(String(u))).filter(Boolean) as string[];
     if (!turnUrls.length && raw.length) {
       try { console.warn('[ICE] No valid TURN URLs parsed from NEXT_PUBLIC_TURN_URL. Check format.'); } catch {}
     }
@@ -105,8 +111,9 @@ export function buildIceConfig(): RTCConfiguration {
   // We keep 1 STUN entry and 1 TURN entry, each may include multiple URLs.
 
   const servers: RTCIceServer[] = [];
-  const stunUrls: string[] = defaultStuns;
-  servers.push({ urls: stunUrls }); // one STUN server entry
+  const disableStun = (disableStunFlag === '1' || disableStunFlag === 'true' || disableStunFlag === 'yes');
+  const stunUrls: string[] = disableStun ? [] : defaultStunsAll;
+  if (stunUrls.length) servers.push({ urls: stunUrls }); // one STUN server entry
   if (turnUrls.length) {
     servers.push({ urls: turnUrls, username: turnUser || undefined, credential: turnCred || undefined });
   }
@@ -134,12 +141,12 @@ export function buildIceConfig(): RTCConfiguration {
 export async function loadIceConfig(): Promise<RTCConfiguration> {
   const dbg = (...a: any[]) => { try { const d = String(process.env.NEXT_PUBLIC_DEBUG_ICE || '').toLowerCase(); if (d === '1' || d === 'true') console.log('[ICE]', ...a); } catch {} };
   const credUrl = (process.env.NEXT_PUBLIC_TURN_CREDENTIALS_URL || '').trim();
+  const disableStunFlag = String(process.env.NEXT_PUBLIC_DISABLE_STUN || '').toLowerCase();
   if (!credUrl) return buildIceConfig();
 
-  const defaultStuns: string[] = [
-    'stun:openrelay.metered.ca:80',
-    'stun:stun.l.google.com:19302',
-  ];
+  const defaultStuns: string[] = (disableStunFlag === '1' || disableStunFlag === 'true' || disableStunFlag === 'yes')
+    ? []
+    : ['stun:openrelay.metered.ca:80'];
 
   const validateTurn = (u: string) => {
     const s = String(u || '').trim();
@@ -185,7 +192,7 @@ export async function loadIceConfig(): Promise<RTCConfiguration> {
     const data: any = await res.json();
     // Accept both shapes: { iceServers: [...] } OR { username, credential, urls|uris: [] }
     const servers: RTCIceServer[] = [];
-    servers.push({ urls: defaultStuns });
+    if (defaultStuns.length) servers.push({ urls: defaultStuns });
     if (Array.isArray(data?.iceServers) && data.iceServers.length) {
       // Filter to TURN entries and collapse into one server where possible
       const turnEntries: RTCIceServer[] = [];
