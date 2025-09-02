@@ -165,6 +165,18 @@ Notas de compatibilidad NAT
 
 When deploying, ensure these envs are added for “Production” (and “Preview” if you use preview deployments). Rebuild after any changes to envs.
 
+### Metered Credentials Endpoint (recomendado si tienes tu propio subdominio)
+
+En lugar de usuario/clave fijos, puedes usar el endpoint de credenciales efímeras de tu cuenta de Metered. El cliente pedirá las credenciales y URLs en tiempo de ejecución y las usará para la conexión.
+
+- Añade en Vercel:
+  - `NEXT_PUBLIC_TURN_CREDENTIALS_URL=https://<TU_SUBDOMINIO>.metered.live/api/v1/turn/credentials?...` (usa exactamente la URL que te muestra tu dashboard; puede incluir `apiKey` u otros parámetros).
+- Opcional: si defines `NEXT_PUBLIC_TURN_CREDENTIALS_URL`, el código no inyecta el fallback genérico de OpenRelay.
+- Puedes combinarlo con `NEXT_PUBLIC_FORCE_TURN=1` y `NEXT_PUBLIC_DEBUG_ICE=1` para depurar.
+
+Comprobación:
+- Abre `/api/debug/ice`: debe mostrar un `iceServers` con tu host de Metered y `hasUsername:true`, `hasCredential:true`.
+
 ## Demo Login and Call Flow
 
 - Navigate to `/`.

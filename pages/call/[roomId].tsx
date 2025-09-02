@@ -20,7 +20,7 @@ import { CopyIcon, PhoneIcon, RepeatIcon, CloseIcon } from '@chakra-ui/icons';
 import ChatPanel, { type ChatMessage } from '../../components/ChatPanel';
 import EmotionDonut from '../../components/EmotionDonut';
 import { SimpleGrid } from '@chakra-ui/react';
-import { buildIceConfig } from '../../lib/ice';
+import { buildIceConfig, loadIceConfig } from '../../lib/ice';
 import useEmotionAnalysis from '../../hooks/useEmotionAnalysis';
 import { loadUser } from '../../lib/authClient';
 import { Progress } from '@chakra-ui/react';
@@ -62,7 +62,14 @@ function CallPage() {
   const pageUrl = typeof window !== 'undefined' ? window.location.href : '';
   const { onCopy, hasCopied } = useClipboard(pageUrl);
 
-  const baseIce = useMemo(() => buildIceConfig(), []);
+  const [baseIce, setBaseIce] = useState<RTCConfiguration | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try { const cfg = await loadIceConfig(); if (!cancelled) setBaseIce(cfg); } catch { if (!cancelled) setBaseIce(buildIceConfig()); }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   const postSignal = useCallback(async (type: SignalType, payload: any, to?: string) => {
     const u = loadUser();
@@ -140,7 +147,7 @@ function CallPage() {
 
   // Multi‑peer: create PC per remote
   const getRtcConfig = useCallback((forceRelay?: boolean): RTCConfiguration => {
-    const base: any = JSON.parse(JSON.stringify(baseIce));
+    const base: any = JSON.parse(JSON.stringify(baseIce || buildIceConfig()));
     if (forceRelay) base.iceTransportPolicy = 'relay';
     // Tighten policies for broader compatibility over TURN
     base.bundlePolicy = 'max-bundle';
@@ -310,7 +317,7 @@ function CallPage() {
 
   // Join room and set up initial peers
   useEffect(() => {
-    if (!roomId || !authToken) return;
+    if (!roomId || !authToken || !baseIce) return;
     (async () => {
       try {
         const res = await fetch(`/api/rooms/${roomId}/join`, {
@@ -348,7 +355,7 @@ function CallPage() {
         toast({ title: 'Failed to join room', description: e?.message, status: 'error' });
       }
     })();
-  }, [peerId, roomId, toast, authToken, authEmail, getOrCreatePC, connectToPeer, ensureLocalStream]);
+  }, [peerId, roomId, toast, authToken, authEmail, getOrCreatePC, connectToPeer, ensureLocalStream, baseIce]);
 
   // remove single‑peer setupPeerConnection (replaced by multi‑peer getOrCreatePC)
 

@@ -1,8 +1,9 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
-import { buildIceConfig } from '../../../lib/ice';
+import { buildIceConfig, loadIceConfig } from '../../../lib/ice';
 
-export default function handler(_req: NextApiRequest, res: NextApiResponse) {
-  const cfg = buildIceConfig();
+export default async function handler(_req: NextApiRequest, res: NextApiResponse) {
+  let cfg: RTCConfiguration = buildIceConfig();
+  try { cfg = await loadIceConfig(); } catch {}
   const redacted = {
     iceServers: (cfg.iceServers || []).map((s: any) => ({
       urls: s.urls,
@@ -15,4 +16,3 @@ export default function handler(_req: NextApiRequest, res: NextApiResponse) {
   return res.status(200).json({ ok: true, cfg: redacted });
 }
 export const config = { runtime: 'nodejs' };
-
