@@ -193,21 +193,24 @@ export async function loadIceConfig(): Promise<RTCConfiguration> {
         const urls = ([] as string[]).concat(s.urls || s.uris || []).filter(Boolean);
         const hasTurn = urls.some((u) => /^turns?:/i.test(String(u)));
         if (!hasTurn) continue;
-        turnEntries.push({ urls, username: s.username, credential: s.credential } as any);
+        // Some providers use 'password' key instead of 'credential'
+        const cred = s.credential ?? s.password;
+        turnEntries.push({ urls, username: s.username, credential: cred } as any);
       }
       if (turnEntries.length) {
         // Merge all urls into one creds pair (prefer first creds)
         const allUrls = turnEntries.flatMap((e) => ([] as string[]).concat(e.urls as any)).map(String);
         const valid = allUrls.map(validateTurn).filter(Boolean) as string[];
         if (valid.length) {
-          servers.push({ urls: valid, username: turnEntries[0].username, credential: turnEntries[0].credential });
+          servers.push({ urls: valid, username: turnEntries[0].username, credential: (turnEntries[0] as any).credential });
         }
       }
     } else {
       const urls = ([] as string[]).concat(data?.urls || data?.uris || []).map(String);
       const valid = urls.map(validateTurn).filter(Boolean) as string[];
-      if (valid.length && (data?.username || data?.credential)) {
-        servers.push({ urls: valid, username: data.username, credential: data.credential });
+      const cred = data?.credential ?? data?.password;
+      if (valid.length && (data?.username || cred)) {
+        servers.push({ urls: valid, username: data.username, credential: cred });
       }
     }
     const cfg: RTCConfiguration = { iceServers: servers };

@@ -71,6 +71,13 @@ function CallPage() {
     return () => { cancelled = true; };
   }, []);
 
+  // Prompt for media as soon as ICE is ready to ensure user sees browser permission
+  useEffect(() => {
+    if (!baseIce) return;
+    // Best-effort; ensureLocalStream internally no-ops if already set
+    ensureLocalStream().catch(() => {});
+  }, [baseIce, ensureLocalStream]);
+
   const postSignal = useCallback(async (type: SignalType, payload: any, to?: string) => {
     const u = loadUser();
     await fetch(`/api/rooms/${roomId}/signal`, {
