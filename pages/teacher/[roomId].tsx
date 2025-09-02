@@ -21,6 +21,8 @@ import {
 } from '@chakra-ui/react';
 import { CopyIcon, PhoneIcon, RepeatIcon, CloseIcon } from '@chakra-ui/icons';
 import { loadUser } from '../../lib/authClient';
+import { buildIceConfig } from '../../lib/ice';
+import { createDummyStream } from '../../lib/dummyMedia';
 import ChatPanel, { type ChatMessage } from '../../components/ChatPanel';
 import EmotionDonut from '../../components/EmotionDonut';
 
@@ -42,6 +44,8 @@ function TeacherRoomPage() {
   const pcsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
   const pendingByPeerRef = useRef<Record<string, RTCIceCandidateInit[]>>({});
   const localStreamRef = useRef<MediaStream | null>(null);
+  const dummyRef = useRef<{ stop: () => void } | null>(null);
+  const upgradeTimerRef = useRef<any>(null);
   const [remoteStreams, setRemoteStreams] = useState<Record<string, MediaStream>>({});
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const remoteVideoElsRef = useRef<Record<string, HTMLVideoElement | null>>({});
@@ -56,48 +60,7 @@ function TeacherRoomPage() {
   const pageUrl = typeof window !== 'undefined' ? window.location.href : '';
   const { onCopy, hasCopied } = useClipboard(pageUrl);
 
-  const iceServers = useMemo(() => {
-    const servers: RTCIceServer[] = [
-      { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:global.stun.twilio.com:3478' },
-    ];
-    const turnUrls = (process.env.NEXT_PUBLIC_TURN_URL || '').trim();
-    const turnHost = (process.env.NEXT_PUBLIC_TURN_HOST || '').trim();
-    const turnUser = (process.env.NEXT_PUBLIC_TURN_USERNAME || '').trim();
-    const turnCred = (process.env.NEXT_PUBLIC_TURN_CREDENTIAL || '').trim();
-    const forceTurn = String(process.env.NEXT_PUBLIC_FORCE_TURN || '').toLowerCase();
-    const validUrls: string[] = [];
-    const pushIfValid = (u: string) => {
-      const s = u.trim();
-      if (!s) return;
-      const m = s.match(/^(turns?):([^\s:?,]+)(?::(\d{1,5}))?(?:\?transport=(udp|tcp))?$/i);
-      if (!m) return;
-      const scheme = m[1].toLowerCase();
-      const host = m[2];
-      let port = m[3] ? Number(m[3]) : (scheme === 'turns' ? 5349 : 3478);
-      if (!(port > 0 && port < 65536)) return;
-      const transport = (m[4] || '').toLowerCase();
-      const url = `${scheme}:${host}:${port}${transport ? `?transport=${transport}` : ''}`;
-      validUrls.push(url);
-    };
-    if (turnUrls) {
-      turnUrls.split(',').forEach(pushIfValid);
-    } else if (turnHost) {
-      [
-        `turn:${turnHost}:3478?transport=udp`,
-        `turn:${turnHost}:3478?transport=tcp`,
-        `turn:${turnHost}:80?transport=tcp`,
-        `turns:${turnHost}:443?transport=tcp`,
-        `turns:${turnHost}:5349?transport=tcp`,
-      ].forEach(pushIfValid);
-    }
-    if (validUrls.length) {
-      servers.push({ urls: validUrls, username: turnUser || undefined, credential: turnCred || undefined });
-    }
-    const cfg: RTCConfiguration = { iceServers: servers };
-    if (forceTurn === '1' || forceTurn === 'true' || forceTurn === 'yes') (cfg as any).iceTransportPolicy = 'relay';
-    return cfg as RTCConfiguration;
-  }, []);
+  const baseIce = useMemo(() => buildIceConfig(), []);
 
   const postSignal = useCallback(async (type: SignalType, payload: any, to?: string) => {
     const u = loadUser();
@@ -138,30 +101,49 @@ function TeacherRoomPage() {
       if (localVideoRef.current) { localVideoRef.current.srcObject = stream; try { await localVideoRef.current.play(); } catch {} }
       return stream;
     } catch (e: any) {
-      const msg = String(e?.name || e?.message || 'unknown');
-      if (/NotReadableError|NotAllowedError|OverconstrainedError|NotFoundError/i.test(msg)) {
-        try {
-          const stream = await navigator.mediaDevices.getUserMedia({ video: false, audio: true });
-          localStreamRef.current = stream;
-          if (localVideoRef.current) { localVideoRef.current.srcObject = stream; try { await localVideoRef.current.play(); } catch {} }
-          toast({ title: 'Joined with microphone only', status: 'info' });
-          return stream;
-        } catch {
-          toast({ title: 'Joined without camera/mic', description: 'Device busy or permission denied.', status: 'warning' });
-          return null;
-        }
+      // Fallback: create dummy tracks so connection negotiates instantly
+      const dummy = createDummyStream();
+      dummyRef.current = { stop: dummy.stop };
+      localStreamRef.current = dummy.stream;
+      if (localVideoRef.current) { localVideoRef.current.srcObject = dummy.stream; try { await localVideoRef.current.play(); } catch {} }
+      toast({ title: 'Using placeholder media', description: 'Real camera/mic unavailable. Will auto‑retry.', status: 'warning' });
+      // Start upgrade probe: try to capture real devices periodically and swap
+      if (!upgradeTimerRef.current) {
+        upgradeTimerRef.current = setInterval(async () => {
+          try {
+            const real = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+            // Replace tracks on all peers
+            pcsRef.current.forEach((pc) => {
+              const vSender = pc.getSenders().find((s) => s.track && s.track.kind === 'video');
+              const aSender = pc.getSenders().find((s) => s.track && s.track.kind === 'audio');
+              const vt = real.getVideoTracks()[0];
+              const at = real.getAudioTracks()[0];
+              if (vt && vSender) vSender.replaceTrack(vt).catch(() => {});
+              if (at && aSender) aSender.replaceTrack(at).catch(() => {});
+              if (!vSender && vt) { try { pc.addTransceiver('video', { direction: 'sendonly' }).sender.replaceTrack(vt); } catch {} }
+              if (!aSender && at) { try { pc.addTransceiver('audio', { direction: 'sendonly' }).sender.replaceTrack(at); } catch {} }
+            });
+            // Update local
+            localStreamRef.current?.getTracks().forEach((t) => { try { t.stop(); } catch {} });
+            dummyRef.current?.stop?.();
+            localStreamRef.current = real;
+            if (localVideoRef.current) { localVideoRef.current.srcObject = real; try { await localVideoRef.current.play(); } catch {} }
+            clearInterval(upgradeTimerRef.current);
+            upgradeTimerRef.current = null;
+            toast({ title: 'Camera/mic restored', status: 'success' });
+          } catch {}
+        }, 5000);
       }
-      toast({ title: 'Camera/Mic error', description: e?.message, status: 'error' });
-      return null;
+      return dummy.stream;
     }
   }, [toast]);
 
   const getRtcConfig = useCallback((forceRelay?: boolean): RTCConfiguration => {
-    const base: any = { ...(iceServers as any) };
-    if (base.iceServers) base.iceServers = [...base.iceServers];
+    const base: any = JSON.parse(JSON.stringify(baseIce));
     if (forceRelay) base.iceTransportPolicy = 'relay';
     return base as RTCConfiguration;
-  }, [iceServers]);
+    
+  }, [baseIce]);
 
   const getOrCreatePC = useCallback(async (remoteId: string, forceRelay?: boolean) => {
     let pc = pcsRef.current.get(remoteId);
@@ -462,6 +444,9 @@ function TeacherRoomPage() {
       pcsRef.current.clear();
     } catch {}
     localStreamRef.current?.getTracks().forEach(t => { try { t.stop(); } catch {} });
+    try { dummyRef.current?.stop?.(); } catch {}
+    dummyRef.current = null;
+    if (upgradeTimerRef.current) { try { clearInterval(upgradeTimerRef.current); } catch {}; upgradeTimerRef.current = null; }
     localStreamRef.current = null;
     setRemoteStreams({});
     setConnected(false);
