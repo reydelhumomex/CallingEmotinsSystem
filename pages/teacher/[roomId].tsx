@@ -51,6 +51,7 @@ function TeacherRoomPage() {
   const [isCamOff, setIsCamOff] = useState(false);
   const [remoteMuted, setRemoteMuted] = useState(true);
   const [chat, setChat] = useState<ChatMessage[]>([]);
+  const offerTimersRef = useRef<Record<string, { timer: any; retries: number }>>({});
 
   const pageUrl = typeof window !== 'undefined' ? window.location.href : '';
   const { onCopy, hasCopied } = useClipboard(pageUrl);
@@ -134,7 +135,7 @@ function TeacherRoomPage() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
       localStreamRef.current = stream;
-      if (localVideoRef.current) localVideoRef.current.srcObject = stream;
+      if (localVideoRef.current) { localVideoRef.current.srcObject = stream; try { await localVideoRef.current.play(); } catch {} }
       return stream;
     } catch (e: any) {
       const msg = String(e?.name || e?.message || 'unknown');
@@ -142,7 +143,7 @@ function TeacherRoomPage() {
         try {
           const stream = await navigator.mediaDevices.getUserMedia({ video: false, audio: true });
           localStreamRef.current = stream;
-          if (localVideoRef.current) localVideoRef.current.srcObject = stream;
+          if (localVideoRef.current) { localVideoRef.current.srcObject = stream; try { await localVideoRef.current.play(); } catch {} }
           toast({ title: 'Joined with microphone only', status: 'info' });
           return stream;
         } catch {
@@ -170,6 +171,45 @@ function TeacherRoomPage() {
     pc.onconnectionstatechange = () => {
       const anyConnected = Array.from(pcsRef.current.values()).some((p) => p.connectionState === 'connected');
       setConnected(anyConnected);
+      if (pc!.connectionState === 'connected') {
+        const t = offerTimersRef.current[remoteId];
+        if (t?.timer) { clearTimeout(t.timer); }
+        delete offerTimersRef.current[remoteId];
+      }
+    };
+    let failTimer: any;
+    pc.oniceconnectionstatechange = () => {
+      const st = pc!.iceConnectionState;
+      if (st === 'failed') {
+        (async () => {
+          try {
+            pcsRef.current.delete(remoteId);
+            try { pc!.close(); } catch {}
+            const npc = await getOrCreatePC(remoteId, true);
+            const offer = await npc.createOffer({ iceRestart: true } as any);
+            await npc.setLocalDescription(offer);
+            await postSignal('offer', offer, remoteId);
+          } catch {}
+        })();
+      } else if (st === 'disconnected') {
+        clearTimeout(failTimer);
+        failTimer = setTimeout(() => {
+          if (pc!.iceConnectionState === 'disconnected') {
+            (async () => {
+              try {
+                pcsRef.current.delete(remoteId);
+                try { pc!.close(); } catch {}
+                const npc = await getOrCreatePC(remoteId, true);
+                const offer = await npc.createOffer({ iceRestart: true } as any);
+                await npc.setLocalDescription(offer);
+                await postSignal('offer', offer, remoteId);
+              } catch {}
+            })();
+          }
+        }, 4000);
+      } else if (st === 'connected') {
+        clearTimeout(failTimer);
+      }
     };
     pc.onicecandidate = (ev) => { if (ev.candidate) postSignal('candidate', ev.candidate, remoteId); };
     pc.ontrack = (ev) => {
@@ -188,6 +228,12 @@ function TeacherRoomPage() {
     return pc;
   }, [getRtcConfig, ensureLocalStream, postSignal, remoteMuted]);
 
+  const clearOfferTimer = useCallback((rid: string) => {
+    const t = offerTimersRef.current[rid];
+    if (t?.timer) clearTimeout(t.timer);
+    delete offerTimersRef.current[rid];
+  }, []);
+
   const sendOffer = useCallback(async (otherId: string, opts?: { iceRestart?: boolean }) => {
     const pc = await getOrCreatePC(otherId);
     if (!pc) return;
@@ -197,8 +243,22 @@ function TeacherRoomPage() {
       const offer = await pc.createOffer(opts?.iceRestart ? ({ iceRestart: true } as any) : undefined);
       await pc.setLocalDescription(offer);
       await postSignal('offer', offer, otherId);
+      // re-offer timer
+      clearOfferTimer(otherId);
+      const entry = { retries: 0, timer: 0 as any };
+      offerTimersRef.current[otherId] = entry;
+      const schedule = () => {
+        entry.timer = setTimeout(async () => {
+          if (pcsRef.current.get(otherId)?.connectionState === 'connected') { clearOfferTimer(otherId); return; }
+          entry.retries += 1;
+          const restart = entry.retries >= 1;
+          try { await sendOffer(otherId, { iceRestart: restart }); } catch {}
+          if (entry.retries < 3) schedule();
+        }, 8000);
+      };
+      schedule();
     } catch {}
-  }, [getOrCreatePC, postSignal, peerId]);
+  }, [getOrCreatePC, postSignal, peerId, clearOfferTimer]);
 
   const connectToPeer = useCallback(async (otherId: string) => {
     await getOrCreatePC(otherId);
@@ -245,6 +305,7 @@ function TeacherRoomPage() {
         await pc.setRemoteDescription(new RTCSessionDescription(msg.payload));
         const buf = pendingByPeerRef.current[from] || [];
         while (buf.length) { const c = buf.shift()!; try { await pc.addIceCandidate(new RTCIceCandidate(c)); } catch {} }
+        clearOfferTimer(from);
       } catch {}
     } else if (msg.type === 'candidate') {
       try {
