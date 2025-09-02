@@ -71,12 +71,7 @@ function CallPage() {
     return () => { cancelled = true; };
   }, []);
 
-  // Prompt for media as soon as ICE is ready to ensure user sees browser permission
-  useEffect(() => {
-    if (!baseIce) return;
-    // Best-effort; ensureLocalStream internally no-ops if already set
-    ensureLocalStream().catch(() => {});
-  }, [baseIce, ensureLocalStream]);
+  
 
   const postSignal = useCallback(async (type: SignalType, payload: any, to?: string) => {
     const u = loadUser();
@@ -151,6 +146,12 @@ function CallPage() {
       return null;
     }
   }, [toast]);
+
+  // Prompt for media as soon as ICE is ready to ensure the browser permission prompt appears
+  useEffect(() => {
+    if (!baseIce) return;
+    ensureLocalStream().catch(() => {});
+  }, [baseIce, ensureLocalStream]);
 
   // Multi‑peer: create PC per remote
   const getRtcConfig = useCallback((forceRelay?: boolean): RTCConfiguration => {
