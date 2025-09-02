@@ -191,6 +191,11 @@ function CallPage() {
 
   const getOrCreatePC = useCallback(async (remoteId: string, forceRelay?: boolean) => {
     let pc = pcsRef.current.get(remoteId);
+    if (pc && pc.signalingState === 'closed') {
+      try { pc.close(); } catch {}
+      pcsRef.current.delete(remoteId);
+      pc = undefined as any;
+    }
     if (pc) return pc;
     try {
       pc = new RTCPeerConnection(getRtcConfig(forceRelay));
@@ -395,13 +400,25 @@ function CallPage() {
     // Route by sender
     const from = msg?.from;
     if (!from || from === peerId) return;
-    const pc = await getOrCreatePC(from);
-    if (!pc) return;
+    // Ensure we operate on a live PC (replace closed ones)
+    let pc = pcsRef.current.get(from);
+    if (!pc || pc.signalingState === 'closed') {
+      if (pc) { try { pc.close(); } catch {}; pcsRef.current.delete(from); }
+      pc = await getOrCreatePC(from);
+      if (!pc) return;
+    }
     if (msg.type === 'offer') {
+      // If previous local offer exists, rollback
       if (pc.signalingState === 'have-local-offer') {
         try { await pc.setLocalDescription({ type: 'rollback' } as any); } catch {}
       }
-      await pc.setRemoteDescription(new RTCSessionDescription(msg.payload));
+      // Guard against closed between await points
+      if (pc.signalingState === 'closed') {
+        try { pcsRef.current.delete(from); } catch {}
+        pc = await getOrCreatePC(from);
+        if (!pc) return;
+      }
+      try { await pc.setRemoteDescription(new RTCSessionDescription(msg.payload)); } catch { return; }
       // apply buffered ICE
       const buf = pendingByPeerRef.current[from] || [];
       while (buf.length) {
@@ -409,13 +426,14 @@ function CallPage() {
         try { await pc.addIceCandidate(new RTCIceCandidate(c)); } catch {}
       }
       const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      await postSignal('answer', answer, from);
+      try { await pc.setLocalDescription(answer); } catch { return; }
+      try { await postSignal('answer', answer, from); } catch {}
     } else if (msg.type === 'answer') {
       try {
         // Ignore stale/duplicate answers
+        if (pc.signalingState === 'closed') return;
         if (pc.signalingState !== 'have-local-offer' || pc.currentRemoteDescription) return;
-        await pc.setRemoteDescription(new RTCSessionDescription(msg.payload));
+        try { await pc.setRemoteDescription(new RTCSessionDescription(msg.payload)); } catch { return; }
         const buf = pendingByPeerRef.current[from] || [];
         while (buf.length) {
           const c = buf.shift()!;
@@ -431,6 +449,7 @@ function CallPage() {
       }
     } else if (msg.type === 'candidate') {
       try {
+        if (pc.signalingState === 'closed') return;
         if (!pc.remoteDescription) {
           (pendingByPeerRef.current[from] || (pendingByPeerRef.current[from] = [])).push(msg.payload);
         } else {
