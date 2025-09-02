@@ -10,7 +10,6 @@ export function buildIceConfig(): RTCConfiguration {
   let turnHost = (process.env.NEXT_PUBLIC_TURN_HOST || '').trim();
   let turnUser = (process.env.NEXT_PUBLIC_TURN_USERNAME || '').trim();
   let turnCred = (process.env.NEXT_PUBLIC_TURN_CREDENTIAL || '').trim();
-  const forceTurn = String(process.env.NEXT_PUBLIC_FORCE_TURN || '').toLowerCase();
 
   const validateTurn = (u: string) => {
     const s = u.trim();
