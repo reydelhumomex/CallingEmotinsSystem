@@ -33,6 +33,8 @@ function randomPeerId() {
 }
 
 function StudentRoomPage() {
+  const ICE_DEBUG = String(process.env.NEXT_PUBLIC_DEBUG_ICE || '').toLowerCase();
+  const dbg = (...a: any[]) => { try { if (ICE_DEBUG === '1' || ICE_DEBUG === 'true') console.log('[ICE]', ...a); } catch {} };
   const router = useRouter();
   const { roomId } = router.query as { roomId: string };
   const toast = useToast();
@@ -150,9 +152,12 @@ function StudentRoomPage() {
   const getOrCreatePC = useCallback(async (remoteId: string, forceRelay?: boolean) => {
     let pc = pcsRef.current.get(remoteId);
     if (pc) return pc;
-    pc = new RTCPeerConnection(getRtcConfig(forceRelay));
+    const cfg = getRtcConfig(forceRelay);
+    dbg('Creating RTCPeerConnection', { remoteId, forceRelay: !!forceRelay, cfg });
+    pc = new RTCPeerConnection(cfg);
     pcsRef.current.set(remoteId, pc);
     pc.onconnectionstatechange = () => {
+      dbg(remoteId, 'connectionstate', pc!.connectionState);
       const anyConnected = Array.from(pcsRef.current.values()).some((p) => p.connectionState === 'connected');
       setConnected(anyConnected);
       if (pc!.connectionState === 'connected') {
@@ -163,6 +168,7 @@ function StudentRoomPage() {
     };
     let failTimer: any;
     pc.oniceconnectionstatechange = () => {
+      dbg(remoteId, 'iceconnectionstate', pc!.iceConnectionState);
       const st = pc!.iceConnectionState;
       if (st === 'failed') {
         (async () => {
@@ -195,7 +201,9 @@ function StudentRoomPage() {
         clearTimeout(failTimer);
       }
     };
-    pc.onicecandidate = (ev) => { if (ev.candidate) postSignal('candidate', ev.candidate, remoteId); };
+    pc.onicecandidate = (ev) => { if (ev.candidate) { dbg(remoteId, 'candidate', ev.candidate.candidate); postSignal('candidate', ev.candidate, remoteId); } };
+    try { pc.onicegatheringstatechange = () => { dbg(remoteId, 'gathering', pc!.iceGatheringState); }; } catch {}
+    try { (pc as any).onicecandidateerror = (e: any) => { dbg(remoteId, 'icecandidateerror', e?.errorCode, e?.errorText); }; } catch {}
     pc.ontrack = (ev) => {
       const [stream] = ev.streams;
       const s = stream || new MediaStream([ev.track]);
