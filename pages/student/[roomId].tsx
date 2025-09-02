@@ -388,7 +388,6 @@ function StudentRoomPage() {
             if (!sender) { try { sender = pc.addTransceiver('audio', { direction: 'sendonly' }).sender; } catch {} }
             sender?.replaceTrack(at).catch(() => {});
           });
-          passiveJoinRef.current = false;
           await negotiate();
           tracks = [at];
         } catch (e: any) {
@@ -418,7 +417,6 @@ function StudentRoomPage() {
             if (!sender) { try { sender = pc.addTransceiver('video', { direction: 'sendonly' }).sender; } catch {} }
             sender?.replaceTrack(vt).catch(() => {});
           });
-          passiveJoinRef.current = false;
           if (localVideoRef.current) { localVideoRef.current.srcObject = stream; try { await localVideoRef.current.play(); } catch {} }
           await negotiate();
           tracks = [vt];
