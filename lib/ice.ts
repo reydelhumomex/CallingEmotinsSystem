@@ -58,6 +58,9 @@ export function buildIceConfig(): RTCConfiguration {
   }
 
   const cfg: RTCConfiguration = { iceServers: servers };
+  // Force relay to guarantee connectivity (normal + incognito on same device)
+  // You can override by setting NEXT_PUBLIC_FORCE_TURN=false explicitly.
+  const forceTurn = String(process.env.NEXT_PUBLIC_FORCE_TURN ?? 'true').toLowerCase();
   if (forceTurn === '1' || forceTurn === 'true' || forceTurn === 'yes') {
     (cfg as any).iceTransportPolicy = 'relay';
   }
