@@ -347,7 +347,7 @@ function CallPage() {
         setJoined(true);
         // Baseline signal cursor to ignore old history
         try {
-          const sres = await fetch(`/api/rooms/${roomId}/signal?since=0&excludeFrom=${peerId}`, { headers: { 'Authorization': `Bearer ${authToken}`, 'X-User-Email': authEmail || '' } });
+          const sres = await fetch(`/api/rooms/${roomId}/signal?since=0&excludeFrom=${peerId}&for=${peerId}` , { headers: { 'Authorization': `Bearer ${authToken}`, 'X-User-Email': authEmail || '' } });
           const sdata = await sres.json();
           if (typeof sdata?.lastId === 'number') setPollCursor(sdata.lastId);
         } catch {}

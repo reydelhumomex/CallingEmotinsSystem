@@ -17,14 +17,16 @@ export interface RoomMeta {
 }
 
 // Optional Redis (Vercel KV/Upstash) backing. Falls back to in-memory store for dev.
-let useRedis = Boolean(process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN);
+const REDIS_URL = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
+const REDIS_TOKEN = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
+let useRedis = Boolean(REDIS_URL && REDIS_TOKEN);
 type UpstashRedis = any;
 let redis: UpstashRedis | null = null;
 if (useRedis) {
   try {
     // Lazy require to avoid type dependency in builds without KV
     const { Redis } = require('@upstash/redis');
-    redis = new Redis({ url: process.env.KV_REST_API_URL, token: process.env.KV_REST_API_TOKEN });
+    redis = new Redis({ url: REDIS_URL, token: REDIS_TOKEN });
   } catch (e) {
     // If the package is missing, fall back to memory
     useRedis = false;
