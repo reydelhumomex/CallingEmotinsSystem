@@ -1,14 +1,15 @@
 export function buildIceConfig(): RTCConfiguration {
   // Keep Chrome recommendations: <= 2 server entries (1 STUN + 1 TURN)
-  const stunUrls: string[] = [
+  // Prefer a vendor STUN first for stickiness (Metered/OpenRelay), then Google.
+  const defaultStuns: string[] = [
+    'stun:openrelay.metered.ca:80',
     'stun:stun.l.google.com:19302',
-    'stun:global.stun.twilio.com:3478',
   ];
 
   const turnUrlsEnv = (process.env.NEXT_PUBLIC_TURN_URL || '').trim();
-  const turnHost = (process.env.NEXT_PUBLIC_TURN_HOST || '').trim();
-  const turnUser = (process.env.NEXT_PUBLIC_TURN_USERNAME || '').trim();
-  const turnCred = (process.env.NEXT_PUBLIC_TURN_CREDENTIAL || '').trim();
+  let turnHost = (process.env.NEXT_PUBLIC_TURN_HOST || '').trim();
+  let turnUser = (process.env.NEXT_PUBLIC_TURN_USERNAME || '').trim();
+  let turnCred = (process.env.NEXT_PUBLIC_TURN_CREDENTIAL || '').trim();
   const forceTurn = String(process.env.NEXT_PUBLIC_FORCE_TURN || '').toLowerCase();
 
   const validateTurn = (u: string) => {
@@ -36,11 +37,21 @@ export function buildIceConfig(): RTCConfiguration {
       `turn:${turnHost}:3478?transport=udp`,
       `turns:${turnHost}:443?transport=tcp`,
     ];
+  } else {
+    // Default to Metered OpenRelay if no TURN is configured
+    turnHost = 'openrelay.metered.ca';
+    turnUser = turnUser || 'openrelayproject';
+    turnCred = turnCred || 'openrelayproject';
+    turnUrls = [
+      `turn:${turnHost}:3478?transport=udp`,
+      `turns:${turnHost}:443?transport=tcp`,
+    ];
   }
   // Limit to 2 urls max to avoid Chrome warnings
   if (turnUrls.length > 2) turnUrls = turnUrls.slice(0, 2);
 
   const servers: RTCIceServer[] = [];
+  const stunUrls: string[] = defaultStuns;
   servers.push({ urls: stunUrls }); // one STUN server entry
   if (turnUrls.length) {
     servers.push({ urls: turnUrls, username: turnUser || undefined, credential: turnCred || undefined });
@@ -52,4 +63,3 @@ export function buildIceConfig(): RTCConfiguration {
   }
   return cfg;
 }
-
