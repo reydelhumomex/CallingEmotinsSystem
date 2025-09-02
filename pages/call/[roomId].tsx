@@ -32,6 +32,8 @@ function randomPeerId() {
 }
 
 function CallPage() {
+  const ICE_DEBUG = String(process.env.NEXT_PUBLIC_DEBUG_ICE || '').toLowerCase();
+  const dbg = (...a: any[]) => { try { if (ICE_DEBUG === '1' || ICE_DEBUG === 'true') console.log('[ICE]', ...a); } catch {} };
   const router = useRouter();
   const { roomId } = router.query as { roomId: string };
   const toast = useToast();
@@ -156,7 +158,9 @@ function CallPage() {
     }
     if (pc) return pc;
     try {
-      pc = new RTCPeerConnection(getRtcConfig(forceRelay));
+      const cfg = getRtcConfig(forceRelay);
+      dbg('Creating RTCPeerConnection', { remoteId, forceRelay: !!forceRelay, cfg });
+      pc = new RTCPeerConnection(cfg);
     } catch (e: any) {
       toast({ title: 'Failed to create RTCPeerConnection', description: e?.message, status: 'error' });
       throw e;
@@ -164,6 +168,7 @@ function CallPage() {
     pcsRef.current.set(remoteId, pc);
 
     pc.onconnectionstatechange = () => {
+      dbg(remoteId, 'connectionstate', pc!.connectionState);
       const anyConnected = Array.from(pcsRef.current.values()).some((p) => p.connectionState === 'connected');
       setConnected(anyConnected);
       if (pc!.connectionState === 'connected') {
@@ -182,6 +187,7 @@ function CallPage() {
       } catch {}
     };
     pc.oniceconnectionstatechange = () => {
+      dbg(remoteId, 'iceconnectionstate', pc!.iceConnectionState);
       const st = pc!.iceConnectionState;
       if (st === 'failed') {
         // escalate to relay-only by rebuilding the PC
@@ -217,8 +223,14 @@ function CallPage() {
     };
 
     pc.onicecandidate = (ev) => {
-      if (ev.candidate) postSignal('candidate', ev.candidate, remoteId);
+      if (ev.candidate) {
+        try { dbg(remoteId, 'candidate', ev.candidate.candidate); } catch {}
+        postSignal('candidate', ev.candidate, remoteId);
+      }
     };
+
+    try { pc.onicegatheringstatechange = () => { dbg(remoteId, 'gathering', pc!.iceGatheringState); }; } catch {}
+    try { (pc as any).onicecandidateerror = (e: any) => { dbg(remoteId, 'icecandidateerror', e?.errorCode, e?.errorText); }; } catch {}
 
     pc.ontrack = (ev) => {
       const [stream] = ev.streams;

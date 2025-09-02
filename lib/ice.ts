@@ -96,8 +96,8 @@ export function buildIceConfig(): RTCConfiguration {
       `turns:${turnHost}:443?transport=tcp`,
     ];
   }
-  // Limit to 2 urls max to avoid Chrome warnings
-  if (turnUrls.length > 2) turnUrls = turnUrls.slice(0, 2);
+  // Keep all provided TURN URLs; Chrome's warning is about server entries, not URLs per entry.
+  // We keep 1 STUN entry and 1 TURN entry, each may include multiple URLs.
 
   const servers: RTCIceServer[] = [];
   const stunUrls: string[] = defaultStuns;
@@ -107,6 +107,13 @@ export function buildIceConfig(): RTCConfiguration {
   }
 
   const cfg: RTCConfiguration = { iceServers: servers };
+  // Optional debug
+  try {
+    const dbg = String(process.env.NEXT_PUBLIC_DEBUG_ICE || '').toLowerCase();
+    if (dbg === '1' || dbg === 'true') {
+      console.log('[ICE] Configured servers:', JSON.parse(JSON.stringify(servers)));
+    }
+  } catch {}
   // Force relay only if explicitly requested via env
   // Set NEXT_PUBLIC_FORCE_TURN=true in Vercel to force TURN relay.
   const forceTurn = String(process.env.NEXT_PUBLIC_FORCE_TURN || '').toLowerCase();
