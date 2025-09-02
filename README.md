@@ -103,59 +103,6 @@ NEXT_PUBLIC_TURN_CREDENTIAL=yourSecret
 
 Then restart the app. Multiple URLs can be comma‑separated.
 
-### Metered.ca (username/password)
-
-- In your Metered dashboard, copy the TURN server host (hostname + ports) and your username/password.
-- Add multiple URLs for better coverage, for example:
-
-```
-# Replace YOUR_TURN_HOST with the host provided by Metered. You can either
-# provide the full URL list in NEXT_PUBLIC_TURN_URL or only the host in
-# NEXT_PUBLIC_TURN_HOST and the app will expand to a hardened list.
-
-# Option A) Provide only host (simpler)
-NEXT_PUBLIC_TURN_HOST=YOUR_TURN_HOST
-
-# Option B) Provide explicit URLs (one line)
-NEXT_PUBLIC_TURN_URL=turn:YOUR_TURN_HOST:3478?transport=udp,turn:YOUR_TURN_HOST:3478?transport=tcp,turn:YOUR_TURN_HOST:80?transport=tcp,turns:YOUR_TURN_HOST:443?transport=tcp,turns:YOUR_TURN_HOST:5349?transport=tcp
-NEXT_PUBLIC_TURN_USERNAME=<YOUR_METERED_USERNAME>
-NEXT_PUBLIC_TURN_CREDENTIAL=<YOUR_METERED_PASSWORD>
-```
-
-Note: The call UI reads these envs on the client. See `pages/call/[roomId].tsx:50` where `NEXT_PUBLIC_TURN_URL`, `NEXT_PUBLIC_TURN_USERNAME`, and `NEXT_PUBLIC_TURN_CREDENTIAL` are used to build the `RTCPeerConnection` ICE config.
-
-To force using TURN only (útil en redes estrictas o CGNAT):
-
-```
-NEXT_PUBLIC_FORCE_TURN=1
-```
-
-### Vercel deployment notes
-
-For reliable signaling on Vercel, enable a persistent store:
-
-- Provision Vercel KV (or Upstash Redis) and set:
-  - `KV_REST_API_URL`
-  - `KV_REST_API_TOKEN`
-
-This repo auto‑detects those env vars and switches the signaling store to Redis.
-
-On Vercel, set the same TURN envs in Project Settings → Environment Variables:
-
-- `NEXT_PUBLIC_TURN_URL`
-- `NEXT_PUBLIC_TURN_USERNAME`
-- `NEXT_PUBLIC_TURN_CREDENTIAL`
-- (optional) `NEXT_PUBLIC_FORCE_TURN` set to `1` para obligar a TURN
-- (optional) `KV_REST_API_URL`, `KV_REST_API_TOKEN`
-
-Notas de compatibilidad NAT
-- Incluir `turns:...:443?transport=tcp` y `turn:...:80?transport=tcp` ayuda cuando UDP está bloqueado.
-- Mantén también `turn:...:3478?transport=udp` para redes abiertas (menor latencia).
-- Si aún falla, activa `NEXT_PUBLIC_FORCE_TURN=1` (relay‑only) y vuelve a probar.
- - Si ves “Invalid port”, revisa que cada URL tenga esquema `turn:`/`turns:`, el host, y un puerto numérico (p. ej. `:443`), sin espacios ni saltos de línea. Si usas `NEXT_PUBLIC_TURN_HOST`, el app genera URLs válidas automáticamente.
-
-When deploying, ensure these envs are added for “Production” (and “Preview” if you use preview deployments). Rebuild after any changes to envs.
-
 ## Demo Login and Call Flow
 
 - Navigate to `/`.

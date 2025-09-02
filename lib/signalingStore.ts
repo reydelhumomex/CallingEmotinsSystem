@@ -1,9 +1,8 @@
-export type SignalType = 'offer' | 'answer' | 'candidate' | 'bye' | 'chat';
+export type SignalType = 'offer' | 'answer' | 'candidate' | 'bye';
 
 export interface SignalMessage {
   id: number;
   from: string;
-  to?: string; // optional recipient peerId; undefined = broadcast to room
   type: SignalType;
   payload: any;
   ts: number;
@@ -17,16 +16,14 @@ export interface RoomMeta {
 }
 
 // Optional Redis (Vercel KV/Upstash) backing. Falls back to in-memory store for dev.
-const REDIS_URL = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
-const REDIS_TOKEN = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
-let useRedis = Boolean(REDIS_URL && REDIS_TOKEN);
+let useRedis = Boolean(process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN);
 type UpstashRedis = any;
 let redis: UpstashRedis | null = null;
 if (useRedis) {
   try {
     // Lazy require to avoid type dependency in builds without KV
     const { Redis } = require('@upstash/redis');
-    redis = new Redis({ url: REDIS_URL, token: REDIS_TOKEN });
+    redis = new Redis({ url: process.env.KV_REST_API_URL, token: process.env.KV_REST_API_TOKEN });
   } catch (e) {
     // If the package is missing, fall back to memory
     useRedis = false;
@@ -37,12 +34,8 @@ if (useRedis) {
 // In-memory fallback store (works in dev and single-process prod)
 type MemRoom = RoomMeta & { messages: SignalMessage[]; participants: Set<string> };
 const g = globalThis as any;
-type MemStore = { rooms: Map<string, MemRoom>; nextMsgId: number; presence: Map<string, Map<string, number>> };
-const mem: MemStore = g.__CLASSENSE_SIGNALING || (g.__CLASSENSE_SIGNALING = { rooms: new Map<string, MemRoom>(), nextMsgId: 1, presence: new Map() });
-// Backward‑compat for dev HMR: older shape may lack presence
-if (!(mem as any).presence || !((mem as any).presence instanceof Map)) {
-  (mem as any).presence = new Map();
-}
+type MemStore = { rooms: Map<string, MemRoom>; nextMsgId: number };
+const mem: MemStore = g.__CLASSENSE_SIGNALING || (g.__CLASSENSE_SIGNALING = { rooms: new Map<string, MemRoom>(), nextMsgId: 1 });
 
 // Key helpers for Redis
 function kRoom(id: string) { return `room:${id}`; }
@@ -50,7 +43,6 @@ function kParticipants(id: string) { return `room:${id}:participants`; }
 function kMessages(id: string) { return `room:${id}:messages`; }
 function kMsgSeq(id: string) { return `room:${id}:msg_id`; }
 function kClassIdx(classId: string) { return `class:${classId}:rooms`; }
-function kPresence(id: string) { return `room:${id}:presence`; }
 
 export async function createRoom(id: string, meta?: { classId?: string; createdBy?: string }): Promise<RoomMeta> {
   if (useRedis && redis) {
@@ -90,17 +82,10 @@ export async function addParticipant(roomId: string, peerId: string, meta?: { cl
   if (useRedis && redis) {
     await ensureRoom(roomId, meta);
     await redis.sadd(kParticipants(roomId), peerId);
-    // Initialize presence on add
-    const now = Date.now();
-    await redis.zadd(kPresence(roomId), { score: now, member: peerId });
-    try { await redis.pexpire(kPresence(roomId), 1000 * 60 * 10); } catch {}
     return;
   }
   const room = (await ensureRoom(roomId, meta)) as MemRoom;
   (room as MemRoom).participants.add(peerId);
-  let p = mem.presence.get(roomId);
-  if (!p) { p = new Map(); mem.presence.set(roomId, p); }
-  p.set(peerId, Date.now());
 }
 
 export async function getParticipants(roomId: string): Promise<string[]> {
@@ -115,7 +100,6 @@ export async function getParticipants(roomId: string): Promise<string[]> {
 export async function removeParticipant(roomId: string, peerId: string) {
   if (useRedis && redis) {
     await redis.srem(kParticipants(roomId), peerId);
-    try { await redis.zrem(kPresence(roomId), peerId); } catch {}
     return;
   }
   const room = mem.rooms.get(roomId) as MemRoom | undefined;
@@ -125,21 +109,19 @@ export async function removeParticipant(roomId: string, peerId: string) {
       mem.rooms.delete(roomId);
     }
   }
-  const p = mem.presence.get(roomId);
-  p?.delete(peerId);
 }
 
-export async function postMessage(roomId: string, from: string, type: SignalType, payload: any, to?: string): Promise<SignalMessage> {
+export async function postMessage(roomId: string, from: string, type: SignalType, payload: any): Promise<SignalMessage> {
   if (useRedis && redis) {
     await ensureRoom(roomId);
     const id = await redis.incr(kMsgSeq(roomId));
-    const msg: SignalMessage = { id, from, to, type, payload, ts: Date.now() };
+    const msg: SignalMessage = { id, from, type, payload, ts: Date.now() };
     await redis.zadd(kMessages(roomId), { score: id, member: JSON.stringify(msg) });
     // Optional trim: keep last 5000 by id window (no-op for small demos)
     return msg;
   }
   const room = (await ensureRoom(roomId)) as MemRoom;
-  const msg: SignalMessage = { id: mem.nextMsgId++, from, to, type, payload, ts: Date.now() };
+  const msg: SignalMessage = { id: mem.nextMsgId++, from, type, payload, ts: Date.now() };
   room.messages.push(msg);
   if (room.messages.length > 5000) {
     room.messages.splice(0, room.messages.length - 5000);
@@ -159,7 +141,7 @@ export async function getMessagesSince(roomId: string, sinceId: number = 0, excl
   const room = (await ensureRoom(roomId)) as MemRoom;
   const startIdx = room.messages.findIndex(m => m.id > sinceId);
   const msgs = (startIdx === -1 ? [] : room.messages.slice(startIdx)).filter(m => (excludeFrom ? m.from !== excludeFrom : true));
-  const lastId = msgs.length ? msgs[msgs.length - 1].id : sinceId;
+  const lastId = room.messages.length ? room.messages[room.messages.length - 1].id : sinceId;
   return { messages: msgs, lastId };
 }
 
@@ -190,36 +172,4 @@ export async function listRoomsByClassId(classId: string): Promise<Array<Pick<Ro
 
 export function getStoreMode(): 'redis' | 'memory' {
   return useRedis ? 'redis' : 'memory';
-}
-
-// Presence (rejoin/resilience)
-export async function heartbeat(roomId: string, peerId: string) {
-  const now = Date.now();
-  if (useRedis && redis) {
-    await ensureRoom(roomId);
-    await redis.zadd(kPresence(roomId), { score: now, member: peerId });
-    try { await redis.pexpire(kPresence(roomId), 1000 * 60 * 10); } catch {}
-    return;
-  }
-  let p = mem.presence.get(roomId);
-  if (!p) { p = new Map(); mem.presence.set(roomId, p); }
-  p.set(peerId, now);
-}
-
-export async function getActiveParticipants(roomId: string, windowMs: number = 15000): Promise<string[]> {
-  const cutoff = Date.now() - windowMs;
-  if (useRedis && redis) {
-    try {
-      const list = await redis.zrange(kPresence(roomId), cutoff, '+inf', { byScore: true });
-      return (list || []) as string[];
-    } catch {
-      // Fallback to full set if server doesn't support byScore
-      return getParticipants(roomId);
-    }
-  }
-  const p = mem.presence.get(roomId);
-  if (!p) return [];
-  const out: string[] = [];
-  p.forEach((ts, id) => { if (ts >= cutoff) out.push(id); });
-  return out;
 }

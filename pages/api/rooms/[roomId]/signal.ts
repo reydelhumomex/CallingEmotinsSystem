@@ -17,21 +17,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (req.method === 'GET') {
     const sinceId = Number(req.query.since || 0);
     const excludeFrom = (req.query.excludeFrom as string) || undefined;
-    const forPeer = (req.query.for as string) || '';
-    const { messages } = await getMessagesSince(roomId, sinceId, excludeFrom);
-    const filtered = forPeer ? messages.filter((m) => !m.to || m.to === forPeer) : messages;
-    const lastIdOut = filtered.length ? filtered[filtered.length - 1].id : sinceId;
-    return res.status(200).json({ ok: true, messages: filtered, lastId: lastIdOut });
+    const { messages, lastId } = await getMessagesSince(roomId, sinceId, excludeFrom);
+    return res.status(200).json({ ok: true, messages, lastId });
   }
 
   if (req.method === 'POST') {
-    const { from, type, payload, to } = req.body || {};
+    const { from, type, payload } = req.body || {};
     if (!from || !type) return res.status(400).json({ ok: false, error: 'Missing fields' });
-    const msg = await postMessage(roomId, String(from), String(type) as any, payload, to ? String(to) : undefined);
+    const msg = await postMessage(roomId, String(from), String(type) as any, payload);
     return res.status(200).json({ ok: true, id: msg.id });
   }
 
   res.setHeader('Allow', ['GET', 'POST']);
   return res.status(405).end('Method Not Allowed');
 }
-export const config = { runtime: 'nodejs' };
