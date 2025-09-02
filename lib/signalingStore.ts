@@ -1,4 +1,4 @@
-export type SignalType = 'offer' | 'answer' | 'candidate' | 'bye';
+export type SignalType = 'offer' | 'answer' | 'candidate' | 'bye' | 'chat';
 
 export interface SignalMessage {
   id: number;

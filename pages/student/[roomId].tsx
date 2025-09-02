@@ -24,7 +24,7 @@ import ChatPanel, { type ChatMessage } from '../../components/ChatPanel';
 import EmotionDonut from '../../components/EmotionDonut';
 import { loadUser } from '../../lib/authClient';
 
-type SignalType = 'offer' | 'answer' | 'candidate' | 'bye';
+type SignalType = 'offer' | 'answer' | 'candidate' | 'bye' | 'chat';
 
 function randomPeerId() {
   return Math.random().toString(36).slice(2, 10);
