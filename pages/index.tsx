@@ -32,7 +32,7 @@ export default function Home() {
       if (user.role !== 'teacher') throw new Error('Only teacher can create rooms');
       const data = await createRoom(user.token, undefined, user.email);
       if (!data?.ok || !data?.roomId) throw new Error(data?.error || 'Failed to create room');
-      await router.push(`/call/${data.roomId}`);
+      await router.push(`/teacher/${data.roomId}`);
     } catch (e: any) {
       toast({ title: e?.message || 'Failed to create room', status: 'error' });
     } finally {
@@ -47,7 +47,8 @@ export default function Home() {
     }
     setBusy(true);
     try {
-      await router.push(`/call/${roomIdInput.trim()}`);
+      const dest = user?.role === 'teacher' ? '/teacher' : '/student';
+      await router.push(`${dest}/${roomIdInput.trim()}`);
     } finally {
       setBusy(false);
     }
