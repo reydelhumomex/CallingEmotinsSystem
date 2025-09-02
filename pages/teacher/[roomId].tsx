@@ -37,6 +37,16 @@ function TeacherRoomPage() {
   const { roomId } = router.query as { roomId: string };
   const toast = useToast();
 
+  // Temporary: route to proven engine to guarantee connection
+  // This ensures immediate stability while we iterate on the new UI shell.
+  if (roomId) {
+    if (typeof window !== 'undefined') {
+      // Avoid running rest of component logic
+      router.replace(`/call/${roomId}`);
+    }
+    return null;
+  }
+
   const [peerId] = useState(() => randomPeerId());
   const [joined, setJoined] = useState(false);
   const [connected, setConnected] = useState(false);

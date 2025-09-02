@@ -17,11 +17,15 @@ import {
   VStack,
 } from '@chakra-ui/react';
 import { CopyIcon, PhoneIcon, RepeatIcon, CloseIcon } from '@chakra-ui/icons';
+import ChatPanel, { type ChatMessage } from '../../components/ChatPanel';
+import EmotionDonut from '../../components/EmotionDonut';
+import { SimpleGrid } from '@chakra-ui/react';
 import useEmotionAnalysis from '../../hooks/useEmotionAnalysis';
+import { createDummyStream } from '../../lib/dummyMedia';
 import { loadUser } from '../../lib/authClient';
 import { Progress } from '@chakra-ui/react';
 
-type SignalType = 'offer' | 'answer' | 'candidate' | 'bye';
+type SignalType = 'offer' | 'answer' | 'candidate' | 'bye' | 'chat';
 
 function randomPeerId() {
   return Math.random().toString(36).slice(2, 10);
@@ -41,6 +45,8 @@ function CallPage() {
   const pcsRef = useRef<Map<string, RTCPeerConnection>>(new Map()); // remoteId -> PC
   const pendingByPeerRef = useRef<Record<string, RTCIceCandidateInit[]>>({});
   const localStreamRef = useRef<MediaStream | null>(null);
+  const dummyRef = useRef<{ stop: () => void } | null>(null);
+  const upgradeTimerRef = useRef<any>(null);
   const [remoteStreams, setRemoteStreams] = useState<Record<string, MediaStream>>({}); // remoteId -> stream
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const remoteVideoElsRef = useRef<Record<string, HTMLVideoElement | null>>({});
@@ -51,6 +57,7 @@ function CallPage() {
   const [remoteMuted, setRemoteMuted] = useState(true);
   // Note: modern browsers may block autoplay with audio; we default to muted
   const offerTimersRef = useRef<Record<string, { timer: any; retries: number }>>({});
+  const [chat, setChat] = useState<ChatMessage[]>([]);
 
   const pageUrl = typeof window !== 'undefined' ? window.location.href : '';
   const { onCopy, hasCopied } = useClipboard(pageUrl);
@@ -151,28 +158,46 @@ function CallPage() {
   // Local media helper
   const ensureLocalStream = useCallback(async () => {
     if (localStreamRef.current) return localStreamRef.current;
-    // get local media (with graceful fallback)
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
       localStreamRef.current = stream;
-      if (localVideoRef.current) localVideoRef.current.srcObject = stream;
+      if (localVideoRef.current) { localVideoRef.current.srcObject = stream; try { await (localVideoRef.current as any).play?.(); } catch {} }
       return stream;
     } catch (e: any) {
-      const msg = String(e?.name || e?.message || 'unknown');
-      if (/NotReadableError|NotAllowedError|OverconstrainedError|NotFoundError/i.test(msg)) {
-        try {
-          const stream = await navigator.mediaDevices.getUserMedia({ video: false, audio: true });
-          localStreamRef.current = stream;
-          if (localVideoRef.current) localVideoRef.current.srcObject = stream;
-          toast({ title: 'Joined with microphone only', status: 'info' });
-          return stream;
-        } catch {
-          toast({ title: 'Joined without camera/mic', description: 'Device busy or permission denied. You can still watch/listen.', status: 'warning' });
-          return null;
-        }
+      // Fallback: dummy tracks to guarantee immediate negotiation even if devices are busy
+      const dummy = createDummyStream();
+      dummyRef.current = { stop: dummy.stop };
+      localStreamRef.current = dummy.stream;
+      if (localVideoRef.current) { localVideoRef.current.srcObject = dummy.stream; try { await (localVideoRef.current as any).play?.(); } catch {} }
+      toast({ title: 'Using placeholder media', description: 'Real camera/mic unavailable. Will auto‑retry.', status: 'warning' });
+      // Retry periodically and upgrade to real tracks
+      if (!upgradeTimerRef.current) {
+        upgradeTimerRef.current = setInterval(async () => {
+          try {
+            const real = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+            // Replace on all peers
+            pcsRef.current.forEach((pc) => {
+              const vSender = pc.getSenders().find((s) => s.track && s.track.kind === 'video');
+              const aSender = pc.getSenders().find((s) => s.track && s.track.kind === 'audio');
+              const vt = real.getVideoTracks()[0];
+              const at = real.getAudioTracks()[0];
+              if (vt && vSender) vSender.replaceTrack(vt).catch(() => {});
+              if (at && aSender) aSender.replaceTrack(at).catch(() => {});
+              if (!vSender && vt) { try { pc.addTransceiver('video', { direction: 'sendonly' }).sender.replaceTrack(vt); } catch {} }
+              if (!aSender && at) { try { pc.addTransceiver('audio', { direction: 'sendonly' }).sender.replaceTrack(at); } catch {} }
+            });
+            // Update local
+            localStreamRef.current?.getTracks().forEach((t) => { try { t.stop(); } catch {} });
+            dummyRef.current?.stop?.();
+            localStreamRef.current = real;
+            if (localVideoRef.current) { localVideoRef.current.srcObject = real; try { await (localVideoRef.current as any).play?.(); } catch {} }
+            clearInterval(upgradeTimerRef.current);
+            upgradeTimerRef.current = null;
+            toast({ title: 'Camera/mic restored', status: 'success' });
+          } catch {}
+        }, 5000);
       }
-      toast({ title: 'Camera/Mic error', description: e?.message, status: 'error' });
-      return null;
+      return dummy.stream;
     }
   }, [toast]);
 
@@ -433,6 +458,9 @@ function CallPage() {
           await pc.addIceCandidate(new RTCIceCandidate(msg.payload));
         }
       } catch {}
+    } else if (msg.type === 'chat') {
+      const p = msg.payload || {};
+      setChat((prev) => prev.concat([{ id: msg.id, text: String(p.text || ''), senderName: p.senderName, senderEmail: p.senderEmail, peerId: from, ts: msg.ts, self: false }]));
     } else if (msg.type === 'bye') {
       // One peer hung up; close only their PC (do not stop shared tracks)
       try {
@@ -525,6 +553,9 @@ function CallPage() {
     } catch {}
     localStreamRef.current?.getTracks().forEach(t => { try { t.stop(); } catch {} });
     localStreamRef.current = null;
+    try { dummyRef.current?.stop?.(); } catch {}
+    dummyRef.current = null;
+    if (upgradeTimerRef.current) { try { clearInterval(upgradeTimerRef.current); } catch {}; upgradeTimerRef.current = null; }
     setRemoteStreams({});
     setConnected(false);
     // Inform server we left (best-effort)
@@ -556,6 +587,14 @@ function CallPage() {
       }
     } catch {}
   }, [endCall, ensureLocalStream, roomId, authToken, authEmail, peerId, getOrCreatePC, connectToPeer]);
+
+  const sendChat = useCallback(async (text: string) => {
+    const payload = { text, senderName: authedUser?.name, senderEmail: authedUser?.email };
+    setChat((prev) => prev.concat([{ text, senderName: payload.senderName, senderEmail: payload.senderEmail, peerId, ts: Date.now(), self: true }]));
+    try {
+      await postSignal('chat', payload);
+    } catch {}
+  }, [postSignal, authedUser?.name, authedUser?.email, peerId]);
 
   // Apply mute to all remote video elements
   useEffect(() => {
@@ -719,53 +758,57 @@ function CallPage() {
           Tip: open this URL in another tab or device and grant camera/mic. This demo uses REST polling for signaling only; media flows peer-to-peer.
         </Box>
 
-        {/* Self HUD */}
-        {emotions && (
-          <Box borderWidth="1px" borderRadius="md" p={4}>
-            <Heading size="sm" mb={2}>Your Emotions</Heading>
-            <Text fontSize="sm">Attentive: {(emotions.attentive * 100).toFixed(0)}%</Text>
-            <Progress value={emotions.attentive * 100} size="sm" colorScheme="green" mb={2} />
-            <Text fontSize="sm">Confused: {(emotions.confused * 100).toFixed(0)}%</Text>
-            <Progress value={emotions.confused * 100} size="sm" colorScheme="yellow" mb={2} />
-            <Text fontSize="sm">Distracted: {(emotions.distracted * 100).toFixed(0)}%</Text>
-            <Progress value={emotions.distracted * 100} size="sm" colorScheme="red" />
-          </Box>
-        )}
+        <SimpleGrid columns={[1, roleIsTeacher ? 2 : 1]} spacing={6} alignItems="start">
+          {emotions && (
+            <Box borderWidth="1px" borderRadius="lg" p={4} bg="white" boxShadow="sm">
+              <Heading size="sm" mb={2}>Your Engagement</Heading>
+              <EmotionDonut data={{ attentive: emotions.attentive, confused: emotions.confused, distracted: emotions.distracted }} />
+            </Box>
+          )}
 
-        {/* Teacher View */}
-        {roleIsTeacher && (
-          <Box borderWidth="1px" borderRadius="md" p={4}>
-            <Heading size="sm" mb={2}>Teacher View (aggregated)</Heading>
-            {agg.students.length === 0 ? (
-              <Text color="gray.500">Awaiting students...</Text>
-            ) : (
-              <VStack align="stretch" spacing={3}>
-                {agg.students.map((s) => (
-                  <Box key={s.peerId}>
-                    <Text fontSize="sm" fontWeight="semibold">{s.name || s.peerId}</Text>
-                    <Text fontSize="xs" color="gray.500">updated {new Date(s.updatedAt).toLocaleTimeString()}</Text>
-                    <Text fontSize="sm">Attentive: {(s.emotions.attentive * 100).toFixed(0)}%</Text>
-                    <Progress value={s.emotions.attentive * 100} size="xs" colorScheme="green" mb={1} />
-                    <Text fontSize="sm">Confused: {(s.emotions.confused * 100).toFixed(0)}%</Text>
-                    <Progress value={s.emotions.confused * 100} size="xs" colorScheme="yellow" mb={1} />
-                    <Text fontSize="sm">Distracted: {(s.emotions.distracted * 100).toFixed(0)}%</Text>
-                    <Progress value={s.emotions.distracted * 100} size="xs" colorScheme="red" />
-                  </Box>
-                ))}
-                <Box>
-                  <Heading size="xs" mb={1}>Recommendations</Heading>
-                  {agg.recommendations?.length ? (
-                    agg.recommendations.map((r, i) => (
-                      <Text key={i} fontSize="sm">• {r.message}</Text>
-                    ))
-                  ) : (
-                    <Text fontSize="sm" color="gray.500">No recommendations yet.</Text>
-                  )}
-                </Box>
-              </VStack>
-            )}
+          <Box borderWidth="1px" borderRadius="lg" p={4} bg="white" boxShadow="sm">
+            <ChatPanel messages={chat} onSend={sendChat} />
           </Box>
-        )}
+
+          {roleIsTeacher && (
+            <Box borderWidth="1px" borderRadius="lg" p={4} bg="white" boxShadow="sm">
+              <Heading size="sm" mb={2}>Class Emotion Analysis</Heading>
+              {agg.students.length === 0 ? (
+                <Text color="gray.500">Awaiting students...</Text>
+              ) : (
+                <VStack align="stretch" spacing={3}>
+                  {/* Class average donut */}
+                  {(() => {
+                    const list = agg.students || [];
+                    const sum = list.reduce((acc: any, s: any) => { acc.attentive += s.emotions.attentive; acc.confused += s.emotions.confused; acc.distracted += s.emotions.distracted; return acc; }, { attentive: 0, confused: 0, distracted: 0 });
+                    const n = Math.max(1, list.length);
+                    return <EmotionDonut data={{ attentive: sum.attentive / n, confused: sum.confused / n, distracted: sum.distracted / n }} title="Class Average" />;
+                  })()}
+                  <Heading size="xs">Per Student</Heading>
+                  <SimpleGrid columns={[1, 2, 3]} spacing={4}>
+                    {agg.students.map((s) => (
+                      <Box key={s.peerId} borderWidth="1px" borderRadius="md" p={3}>
+                        <Text fontSize="sm" fontWeight="semibold" noOfLines={1}>{s.name || s.peerId}</Text>
+                        <Text fontSize="xs" color="gray.500" mb={2}>updated {new Date(s.updatedAt).toLocaleTimeString()}</Text>
+                        <EmotionDonut data={s.emotions} size={120} thickness={12} showLegend={false} />
+                      </Box>
+                    ))}
+                  </SimpleGrid>
+                  <Box>
+                    <Heading size="xs" mb={1}>Recommendations</Heading>
+                    {agg.recommendations?.length ? (
+                      agg.recommendations.map((r, i) => (
+                        <Text key={i} fontSize="sm">• {r.message}</Text>
+                      ))
+                    ) : (
+                      <Text fontSize="sm" color="gray.500">No recommendations yet.</Text>
+                    )}
+                  </Box>
+                </VStack>
+              )}
+            </Box>
+          )}
+        </SimpleGrid>
       </VStack>
     </Container>
   );

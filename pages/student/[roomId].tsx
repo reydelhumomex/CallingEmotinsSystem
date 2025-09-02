@@ -37,6 +37,15 @@ function StudentRoomPage() {
   const { roomId } = router.query as { roomId: string };
   const toast = useToast();
 
+  // Temporary: route to proven engine to guarantee connection
+  // This ensures immediate stability while we refine the dashboard shell.
+  if (roomId) {
+    if (typeof window !== 'undefined') {
+      router.replace(`/call/${roomId}`);
+    }
+    return null;
+  }
+
   const [peerId] = useState(() => randomPeerId());
   const [joined, setJoined] = useState(false);
   const [connected, setConnected] = useState(false);
