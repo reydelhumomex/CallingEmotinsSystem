@@ -18,9 +18,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const sinceId = Number(req.query.since || 0);
     const excludeFrom = (req.query.excludeFrom as string) || undefined;
     const forPeer = (req.query.for as string) || '';
-    const { messages, lastId } = await getMessagesSince(roomId, sinceId, excludeFrom);
+    const { messages } = await getMessagesSince(roomId, sinceId, excludeFrom);
     const filtered = forPeer ? messages.filter((m) => !m.to || m.to === forPeer) : messages;
-    return res.status(200).json({ ok: true, messages: filtered, lastId });
+    const lastIdOut = filtered.length ? filtered[filtered.length - 1].id : sinceId;
+    return res.status(200).json({ ok: true, messages: filtered, lastId: lastIdOut });
   }
 
   if (req.method === 'POST') {

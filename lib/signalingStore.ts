@@ -157,7 +157,7 @@ export async function getMessagesSince(roomId: string, sinceId: number = 0, excl
   const room = (await ensureRoom(roomId)) as MemRoom;
   const startIdx = room.messages.findIndex(m => m.id > sinceId);
   const msgs = (startIdx === -1 ? [] : room.messages.slice(startIdx)).filter(m => (excludeFrom ? m.from !== excludeFrom : true));
-  const lastId = room.messages.length ? room.messages[room.messages.length - 1].id : sinceId;
+  const lastId = msgs.length ? msgs[msgs.length - 1].id : sinceId;
   return { messages: msgs, lastId };
 }
 
