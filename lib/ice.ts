@@ -140,9 +140,10 @@ export function buildIceConfig(): RTCConfiguration {
 //   https://classemotionanalisis.metered.live/api/v1/turn/credentials?apiKey=... (or the URL your dashboard shows)
 export async function loadIceConfig(): Promise<RTCConfiguration> {
   const dbg = (...a: any[]) => { try { const d = String(process.env.NEXT_PUBLIC_DEBUG_ICE || '').toLowerCase(); if (d === '1' || d === 'true') console.log('[ICE]', ...a); } catch {} };
-  const credUrl = (process.env.NEXT_PUBLIC_TURN_CREDENTIALS_URL || '').trim();
+  const publicCredUrl = (process.env.NEXT_PUBLIC_TURN_CREDENTIALS_URL || '').trim();
+  const credUrl = publicCredUrl || '/api/turn/credentials';
   const disableStunFlag = String(process.env.NEXT_PUBLIC_DISABLE_STUN || '').toLowerCase();
-  if (!credUrl) return buildIceConfig();
+  // Always try to fetch credentials (server route will 400 if not configured)
 
   const defaultStuns: string[] = (disableStunFlag === '1' || disableStunFlag === 'true' || disableStunFlag === 'yes')
     ? []
@@ -187,7 +188,10 @@ export async function loadIceConfig(): Promise<RTCConfiguration> {
   };
 
   try {
-    const res = await fetch(credUrl, { cache: 'no-store' as any });
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), 7000);
+    const res = await fetch(credUrl, { cache: 'no-store' as any, signal: ac.signal });
+    clearTimeout(t);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data: any = await res.json();
     // Accept both shapes: { iceServers: [...] } OR { username, credential, urls|uris: [] }
